@@ -1,6 +1,6 @@
-diff -urNp strongswan-5.1.0-patched/src/libstrongswan/utils/settings.c strongswan-5.1.0-current/src/libstrongswan/utils/settings.c
---- strongswan-5.1.0-patched/src/libstrongswan/utils/settings.c	2013-08-06 17:16:36.244031484 -0400
-+++ strongswan-5.1.0-current/src/libstrongswan/utils/settings.c	2013-08-06 17:52:43.272606717 -0400
+diff -urNp strongswan-5.1.1-patched/src/libstrongswan/utils/settings.c strongswan-5.1.1-current/src/libstrongswan/utils/settings.c
+--- strongswan-5.1.1-patched/src/libstrongswan/utils/settings.c	2013-11-01 13:12:06.034927154 -0400
++++ strongswan-5.1.1-current/src/libstrongswan/utils/settings.c	2013-11-01 13:18:56.230912491 -0400
 @@ -960,7 +960,7 @@ static bool parse_file(linked_list_t *co
  	{
  		if (errno == ENOENT)
