@@ -16,7 +16,10 @@
 #ifndef _KEYWORDS_H_
 #define _KEYWORDS_H_
 
-typedef enum {
+typedef enum kw_token_t kw_token_t;
+typedef struct kw_entry_t kw_entry_t;
+
+enum kw_token_t {
 	/* config setup keywords */
 	KW_CHARONDEBUG,
 	KW_UNIQUEIDS,
@@ -36,7 +39,6 @@ typedef enum {
 	KW_COMPRESS,
 	KW_INSTALLPOLICY,
 	KW_AGGRESSIVE,
-	KW_AUTH,
 	KW_AUTHBY,
 	KW_EAP_IDENTITY,
 	KW_AAA_IDENTITY,
@@ -57,6 +59,7 @@ typedef enum {
 	KW_REAUTH,
 	KW_IKE,
 	KW_ESP,
+	KW_AH,
 	KW_DPDDELAY,
 	KW_DPDTIMEOUT,
 	KW_DPDACTION,
@@ -69,6 +72,7 @@ typedef enum {
 	KW_MEDIATED_BY,
 	KW_ME_PEERID,
 	KW_REQID,
+	KW_REPLAY_WINDOW,
 	KW_MARK,
 	KW_MARK_IN,
 	KW_MARK_OUT,
@@ -184,6 +188,11 @@ typedef enum {
 	KW_ALSO,
 	KW_AUTO,
 
-} kw_token_t;
+};
+
+struct kw_entry_t {
+	char *name;
+	kw_token_t token;
+};
 
 #endif /* _KEYWORDS_H_ */

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2006-2012 Tobias Brunner
+ * Copyright (C) 2006-2013 Tobias Brunner
  * Copyright (C) 2005-2009 Martin Willi
  * Copyright (C) 2008 Andreas Steffen
  * Copyright (C) 2006-2007 Fabian Hartmann, Noah Heusser
@@ -70,11 +70,11 @@
 #define SOL_UDP IPPROTO_UDP
 #endif
 
-/** Default priority of installed policies */
-#define PRIO_BASE 512
+/** Base priority for installed policies */
+#define PRIO_BASE 384
 
-/** Default replay window size, if not set using charon.replay_window */
-#define DEFAULT_REPLAY_WINDOW 32
+/** Default lifetime of an acquire XFRM state (in seconds) */
+#define DEFAULT_ACQUIRE_LIFETIME 165
 
 /**
  * Map the limit for bytes and packets to XFRM_INF by default
@@ -177,7 +177,7 @@ static kernel_algorithm_t encryption_algs[] = {
 	{ENCR_3DES,					"des3_ede"			},
 /*	{ENCR_RC5,					"***"				}, */
 /*	{ENCR_IDEA,					"***"				}, */
-	{ENCR_CAST,					"cast128"			},
+	{ENCR_CAST,					"cast5"				},
 	{ENCR_BLOWFISH,				"blowfish"			},
 /*	{ENCR_3IDEA,				"***"				}, */
 /*	{ENCR_DES_IV32,				"***"				}, */
@@ -313,16 +313,6 @@ struct private_kernel_netlink_ipsec_t {
 	 * Whether to track the history of a policy
 	 */
 	bool policy_history;
-
-	/**
-	 * Size of the replay window, in packets (= bits)
-	 */
-	u_int32_t replay_window;
-
-	/**
-	 * Size of the replay window bitmap, in number of __u32 blocks
-	 */
-	u_int32_t replay_bmp;
 };
 
 typedef struct route_entry_t route_entry_t;
@@ -616,6 +606,9 @@ static inline u_int32_t get_priority(policy_entry_t *policy,
 			priority <<= 1;
 			/* fall-through */
 		case POLICY_PRIORITY_DEFAULT:
+			priority <<= 1;
+			/* fall-through */
+		case POLICY_PRIORITY_PASS:
 			break;
 	}
 	/* calculate priority based on selector size, small size = high prio */
@@ -733,6 +726,17 @@ static struct xfrm_selector ts2selector(traffic_selector_t *src,
 	ts2subnet(src, &sel.saddr, &sel.prefixlen_s);
 	ts2ports(dst, &sel.dport, &sel.dport_mask);
 	ts2ports(src, &sel.sport, &sel.sport_mask);
+	if ((sel.proto == IPPROTO_ICMP || sel.proto == IPPROTO_ICMPV6) &&
+		(sel.dport || sel.sport))
+	{
+		/* the ICMP type is encoded in the most significant 8 bits and the ICMP
+		 * code in the least significant 8 bits of the port.  via XFRM we have
+		 * to pass the ICMP type and code in the source and destination port
+		 * fields, respectively.  the port is in network byte order. */
+		u_int16_t port = max(sel.dport, sel.sport);
+		sel.sport = htons(port & 0xff);
+		sel.dport = htons(port >> 8);
+	}
 	sel.ifindex = 0;
 	sel.user = 0;
 
@@ -755,7 +759,7 @@ static traffic_selector_t* selector2ts(struct xfrm_selector *sel, bool src)
 		prefixlen = sel->prefixlen_s;
 		if (sel->sport_mask)
 		{
-			port = htons(sel->sport);
+			port = ntohs(sel->sport);
 		}
 	}
 	else
@@ -764,10 +768,15 @@ static traffic_selector_t* selector2ts(struct xfrm_selector *sel, bool src)
 		prefixlen = sel->prefixlen_d;
 		if (sel->dport_mask)
 		{
-			port = htons(sel->dport);
+			port = ntohs(sel->dport);
 		}
 	}
-
+	if (sel->proto == IPPROTO_ICMP || sel->proto == IPPROTO_ICMPV6)
+	{	/* convert ICMP[v6] message type and code as supplied by the kernel in
+		 * source and destination ports (both in network order) */
+		port = (sel->sport >> 8) | (sel->dport & 0xff00);
+		port = ntohs(port);
+	}
 	/* The Linux 2.6 kernel does not set the selector's family field,
 	 * so as a kludge we additionally test the prefix length.
 	 */
@@ -1167,8 +1176,9 @@ METHOD(kernel_ipsec_t, add_sa, status_t,
 	private_kernel_netlink_ipsec_t *this, host_t *src, host_t *dst,
 	u_int32_t spi, u_int8_t protocol, u_int32_t reqid, mark_t mark,
 	u_int32_t tfc, lifetime_cfg_t *lifetime, u_int16_t enc_alg, chunk_t enc_key,
-	u_int16_t int_alg, chunk_t int_key, ipsec_mode_t mode, u_int16_t ipcomp,
-	u_int16_t cpi, bool initiator, bool encap, bool esn, bool inbound,
+	u_int16_t int_alg, chunk_t int_key, ipsec_mode_t mode,
+	u_int16_t ipcomp, u_int16_t cpi, u_int32_t replay_window,
+	bool initiator, bool encap, bool esn, bool inbound,
 	traffic_selector_t* src_ts, traffic_selector_t* dst_ts)
 {
 	netlink_buf_t request;
@@ -1176,6 +1186,7 @@ METHOD(kernel_ipsec_t, add_sa, status_t,
 	struct nlmsghdr *hdr;
 	struct xfrm_usersa_info *sa;
 	u_int16_t icv_size = 64;
+	ipsec_mode_t original_mode = mode;
 	status_t status = FAILED;
 
 	/* if IPComp is used, we install an additional IPComp SA. if the cpi is 0
@@ -1185,8 +1196,8 @@ METHOD(kernel_ipsec_t, add_sa, status_t,
 		lifetime_cfg_t lft = {{0,0,0},{0,0,0},{0,0,0}};
 		add_sa(this, src, dst, htonl(ntohs(cpi)), IPPROTO_COMP, reqid, mark,
 			   tfc, &lft, ENCR_UNDEFINED, chunk_empty, AUTH_UNDEFINED,
-			   chunk_empty, mode, ipcomp, 0, initiator, FALSE, FALSE, inbound,
-			   NULL, NULL);
+			   chunk_empty, mode, ipcomp, 0, 0, initiator, FALSE, FALSE,
+			   inbound, src_ts, dst_ts);
 		ipcomp = IPCOMP_NONE;
 		/* use transport mode ESP SA, IPComp uses tunnel mode */
 		mode = MODE_TRANSPORT;
@@ -1216,7 +1227,12 @@ METHOD(kernel_ipsec_t, add_sa, status_t,
 			break;
 		case MODE_BEET:
 		case MODE_TRANSPORT:
-			if(src_ts && dst_ts)
+			if (original_mode == MODE_TUNNEL)
+			{	/* don't install selectors for switched SAs.  because only one
+				 * selector can be installed other traffic would get dropped */
+				break;
+			}
+			if (src_ts && dst_ts)
 			{
 				sa->sel = ts2selector(src_ts, dst_ts);
 				/* don't install proto/port on SA. This would break
@@ -1432,8 +1448,8 @@ METHOD(kernel_ipsec_t, add_sa, status_t,
 		goto failed;
 	}
 
-	if (tfc)
-	{
+	if (tfc && protocol == IPPROTO_ESP && mode == MODE_TUNNEL)
+	{	/* the kernel supports TFC padding only for tunnel mode ESP SAs */
 		u_int32_t *tfcpad;
 
 		tfcpad = netlink_reserve(hdr, sizeof(request), XFRMA_TFCPAD,
@@ -1447,23 +1463,24 @@ METHOD(kernel_ipsec_t, add_sa, status_t,
 
 	if (protocol != IPPROTO_COMP)
 	{
-		if (esn || this->replay_window > DEFAULT_REPLAY_WINDOW)
+		if (replay_window != 0 && (esn || replay_window > 32))
 		{
 			/* for ESN or larger replay windows we need the new
 			 * XFRMA_REPLAY_ESN_VAL attribute to configure a bitmap */
 			struct xfrm_replay_state_esn *replay;
+			u_int32_t bmp_size;
 
+			bmp_size = round_up(replay_window, sizeof(u_int32_t) * 8) / 8;
 			replay = netlink_reserve(hdr, sizeof(request), XFRMA_REPLAY_ESN_VAL,
-							sizeof(*replay) + (this->replay_window + 7) / 8);
+									 sizeof(*replay) + bmp_size);
 			if (!replay)
 			{
 				goto failed;
 			}
 			/* bmp_len contains number uf __u32's */
-			replay->bmp_len = this->replay_bmp;
-			replay->replay_window = this->replay_window;
-			DBG2(DBG_KNL, "  using replay window of %u packets",
-				 this->replay_window);
+			replay->bmp_len = bmp_size / sizeof(u_int32_t);
+			replay->replay_window = replay_window;
+			DBG2(DBG_KNL, "  using replay window of %u packets", replay_window);
 
 			if (esn)
 			{
@@ -1473,9 +1490,8 @@ METHOD(kernel_ipsec_t, add_sa, status_t,
 		}
 		else
 		{
-			DBG2(DBG_KNL, "  using replay window of %u packets",
-				 this->replay_window);
-			sa->replay_window = this->replay_window;
+			DBG2(DBG_KNL, "  using replay window of %u packets", replay_window);
+			sa->replay_window = replay_window;
 		}
 	}
 
@@ -1509,6 +1525,7 @@ static void get_replay_state(private_kernel_netlink_ipsec_t *this,
 							 u_int32_t spi, u_int8_t protocol,
 							 host_t *dst, mark_t mark,
 							 struct xfrm_replay_state_esn **replay_esn,
+							 u_int32_t *replay_esn_len,
 							 struct xfrm_replay_state **replay)
 {
 	netlink_buf_t request;
@@ -1585,9 +1602,10 @@ static void get_replay_state(private_kernel_netlink_ipsec_t *this,
 				break;
 			}
 			if (rta->rta_type == XFRMA_REPLAY_ESN_VAL &&
-				RTA_PAYLOAD(rta) >= sizeof(**replay_esn) + this->replay_bmp)
+				RTA_PAYLOAD(rta) >= sizeof(**replay_esn))
 			{
 				*replay_esn = malloc(RTA_PAYLOAD(rta));
+				*replay_esn_len = RTA_PAYLOAD(rta);
 				memcpy(*replay_esn, RTA_DATA(rta), RTA_PAYLOAD(rta));
 				break;
 			}
@@ -1600,7 +1618,7 @@ static void get_replay_state(private_kernel_netlink_ipsec_t *this,
 METHOD(kernel_ipsec_t, query_sa, status_t,
 	private_kernel_netlink_ipsec_t *this, host_t *src, host_t *dst,
 	u_int32_t spi, u_int8_t protocol, mark_t mark,
-	u_int64_t *bytes, u_int64_t *packets, u_int32_t *time)
+	u_int64_t *bytes, u_int64_t *packets, time_t *time)
 {
 	netlink_buf_t request;
 	struct nlmsghdr *out = NULL, *hdr;
@@ -1771,6 +1789,7 @@ METHOD(kernel_ipsec_t, update_sa, status_t,
 	struct xfrm_encap_tmpl* tmpl = NULL;
 	struct xfrm_replay_state *replay = NULL;
 	struct xfrm_replay_state_esn *replay_esn = NULL;
+	u_int32_t replay_esn_len;
 	status_t status = FAILED;
 
 	/* if IPComp is used, we first update the IPComp SA */
@@ -1835,7 +1854,7 @@ METHOD(kernel_ipsec_t, update_sa, status_t,
 		goto failed;
 	}
 
-	get_replay_state(this, spi, protocol, dst, mark, &replay_esn, &replay);
+	get_replay_state(this, spi, protocol, dst, mark, &replay_esn, &replay_esn_len, &replay);
 
 	/* delete the old SA (without affecting the IPComp SA) */
 	if (del_sa(this, src, dst, spi, protocol, 0, mark) != SUCCESS)
@@ -1903,12 +1922,12 @@ METHOD(kernel_ipsec_t, update_sa, status_t,
 		struct xfrm_replay_state_esn *state;
 
 		state = netlink_reserve(hdr, sizeof(request), XFRMA_REPLAY_ESN_VAL,
-								sizeof(*state) + this->replay_bmp);
+								replay_esn_len);
 		if (!state)
 		{
 			goto failed;
 		}
-		memcpy(state, replay_esn, sizeof(*state) + this->replay_bmp);
+		memcpy(state, replay_esn, replay_esn_len);
 	}
 	else if (replay)
 	{
@@ -2116,9 +2135,20 @@ static status_t add_policy_internal(private_kernel_netlink_ipsec_t *this,
 				fwd->dst_ts, &route->src_ip, NULL) == SUCCESS)
 		{
 			/* get the nexthop to src (src as we are in POLICY_FWD) */
-			route->gateway = hydra->kernel_interface->get_nexthop(
+			if (!ipsec->src->is_anyaddr(ipsec->src))
+			{
+				route->gateway = hydra->kernel_interface->get_nexthop(
 											hydra->kernel_interface, ipsec->src,
-											ipsec->dst);
+											-1, ipsec->dst);
+			}
+			else
+			{	/* for shunt policies */
+				iface = xfrm2host(policy->sel.family, &policy->sel.saddr, 0);
+				route->gateway = hydra->kernel_interface->get_nexthop(
+										hydra->kernel_interface, iface,
+										policy->sel.prefixlen_s, route->src_ip);
+				iface->destroy(iface);
+			}
 			route->dst_net = chunk_alloc(policy->sel.family == AF_INET ? 4 : 16);
 			memcpy(route->dst_net.ptr, &policy->sel.saddr, route->dst_net.len);
 
@@ -2291,7 +2321,7 @@ METHOD(kernel_ipsec_t, add_policy, status_t,
 METHOD(kernel_ipsec_t, query_policy, status_t,
 	private_kernel_netlink_ipsec_t *this, traffic_selector_t *src_ts,
 	traffic_selector_t *dst_ts, policy_dir_t direction, mark_t mark,
-	u_int32_t *use_time)
+	time_t *use_time)
 {
 	netlink_buf_t request;
 	struct nlmsghdr *out = NULL, *hdr;
@@ -2623,7 +2653,7 @@ kernel_netlink_ipsec_t *kernel_netlink_ipsec_create()
 {
 	private_kernel_netlink_ipsec_t *this;
 	bool register_for_events = TRUE;
-	int fd;
+	FILE *f;
 
 	INIT(this,
 		.public = {
@@ -2652,25 +2682,21 @@ kernel_netlink_ipsec_t *kernel_netlink_ipsec_create()
 		.mutex = mutex_create(MUTEX_TYPE_DEFAULT),
 		.policy_history = TRUE,
 		.install_routes = lib->settings->get_bool(lib->settings,
-					"%s.install_routes", TRUE, hydra->daemon),
-		.replay_window = lib->settings->get_int(lib->settings,
-					"%s.replay_window", DEFAULT_REPLAY_WINDOW, hydra->daemon),
+							"%s.install_routes", TRUE, lib->ns),
 	);
 
-	this->replay_bmp = (this->replay_window + sizeof(u_int32_t) * 8 - 1) /
-													(sizeof(u_int32_t) * 8);
-
-	if (streq(hydra->daemon, "starter"))
+	if (streq(lib->ns, "starter"))
 	{	/* starter has no threads, so we do not register for kernel events */
 		register_for_events = FALSE;
 	}
 
-	/* disable lifetimes for allocated SPIs in kernel */
-	fd = open("/proc/sys/net/core/xfrm_acq_expires", O_WRONLY);
-	if (fd > 0)
+	f = fopen("/proc/sys/net/core/xfrm_acq_expires", "w");
+	if (f)
 	{
-		ignore_result(write(fd, "165", 3));
-		close(fd);
+		fprintf(f, "%u", lib->settings->get_int(lib->settings,
+								"%s.plugins.kernel-netlink.xfrm_acq_expires",
+								DEFAULT_ACQUIRE_LIFETIME, lib->ns));
+		fclose(f);
 	}
 
 	this->socket_xfrm = netlink_socket_create(NETLINK_XFRM);

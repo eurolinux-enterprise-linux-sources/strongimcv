@@ -14,6 +14,7 @@
  */
 
 #include <time.h>
+#include <errno.h>
 
 #include "pki.h"
 
@@ -71,8 +72,8 @@ static int issue()
 	int inhibit_mapping = X509_NO_CONSTRAINT, require_explicit = X509_NO_CONSTRAINT;
 	chunk_t serial = chunk_empty;
 	chunk_t encoding = chunk_empty;
-	time_t lifetime = 1095;
-	time_t not_before, not_after;
+	time_t not_before, not_after, lifetime = 1095 * 24 * 60 * 60;
+	char *datenb = NULL, *datena = NULL, *dateform = NULL;
 	x509_flag_t flags = 0;
 	x509_t *x509;
 	x509_cdp_t *cdp = NULL;
@@ -105,8 +106,7 @@ static int issue()
 				}
 				continue;
 			case 'g':
-				digest = enum_from_name(hash_algorithm_short_names, arg);
-				if (digest == -1)
+				if (!enum_from_name(hash_algorithm_short_names, arg, &digest))
 				{
 					error = "invalid --digest type";
 					goto usage;
@@ -131,12 +131,21 @@ static int issue()
 				san->insert_last(san, identification_create_from_string(arg));
 				continue;
 			case 'l':
-				lifetime = atoi(arg);
+				lifetime = atoi(arg) * 24 * 60 * 60;
 				if (!lifetime)
 				{
 					error = "invalid --lifetime value";
 					goto usage;
 				}
+				continue;
+			case 'D':
+				dateform = arg;
+				continue;
+			case 'F':
+				datenb = arg;
+				continue;
+			case 'T':
+				datena = arg;
 				continue;
 			case 's':
 				hex = arg;
@@ -241,6 +250,10 @@ static int issue()
 				{
 					flags |= X509_OCSP_SIGNER;
 				}
+				else if (streq(arg, "msSmartcardLogon"))
+				{
+					flags |= X509_MS_SMARTCARD_LOGON;
+				}
 				continue;
 			case 'f':
 				if (!get_form(arg, &form, CRED_CERTIFICATE))
@@ -282,6 +295,12 @@ static int issue()
 	if (!cakey && !keyid)
 	{
 		error = "--cakey or --keyid is required";
+		goto usage;
+	}
+	if (!calculate_lifetime(dateform, datenb, datena, lifetime,
+							&not_before, &not_after))
+	{
+		error = "invalid --not-before/after datetime";
 		goto usage;
 	}
 	if (dn && *dn)
@@ -362,6 +381,7 @@ static int issue()
 			rng->destroy(rng);
 			goto end;
 		}
+		serial.ptr[0] &= 0x7F;
 		rng->destroy(rng);
 	}
 
@@ -380,9 +400,19 @@ static int issue()
 		}
 		else
 		{
+			chunk_t chunk;
+
+			set_file_mode(stdin, CERT_ASN1_DER);
+			if (!chunk_from_fd(0, &chunk))
+			{
+				fprintf(stderr, "%s: ", strerror(errno));
+				error = "reading certificate request failed";
+				goto end;
+			}
 			cert_req = lib->creds->create(lib->creds, CRED_CERTIFICATE,
 										  CERT_PKCS10_REQUEST,
-										  BUILD_FROM_FD, 0, BUILD_END);
+										  BUILD_BLOB, chunk, BUILD_END);
+			free(chunk.ptr);
 		}
 		if (!cert_req)
 		{
@@ -419,8 +449,17 @@ static int issue()
 		}
 		else
 		{
+			chunk_t chunk;
+
+			if (!chunk_from_fd(0, &chunk))
+			{
+				fprintf(stderr, "%s: ", strerror(errno));
+				error = "reading public key failed";
+				goto end;
+			}
 			public = lib->creds->create(lib->creds, CRED_PUBLIC_KEY, KEY_ANY,
-										 BUILD_FROM_FD, 0, BUILD_END);
+										 BUILD_BLOB, chunk, BUILD_END);
+			free(chunk.ptr);
 		}
 	}
 	if (!public)
@@ -434,9 +473,6 @@ static int issue()
 		id = identification_create_from_encoding(ID_DER_ASN1_DN,
 										chunk_from_chars(ASN1_SEQUENCE, 0));
 	}
-
-	not_before = time(NULL);
-	not_after = not_before + lifetime * 24 * 60 * 60;
 
 	cert = lib->creds->create(lib->creds, CRED_CERTIFICATE, CERT_X509,
 					BUILD_SIGNING_KEY, private, BUILD_SIGNING_CERT, ca,
@@ -465,6 +501,7 @@ static int issue()
 		error = "encoding certificate failed";
 		goto end;
 	}
+	set_file_mode(stdout, form);
 	if (fwrite(encoding.ptr, encoding.len, 1, stdout) != 1)
 	{
 		error = "writing certificate key failed";
@@ -514,14 +551,14 @@ static void __attribute__ ((constructor))reg()
 	command_register((command_t) {
 		issue, 'i', "issue",
 		"issue a certificate using a CA certificate and key",
-		{"[--in file] [--type pub|pkcs10] --cakey file | --cakeyid hex",
+		{"[--in file] [--type pub|pkcs10] --cakey file|--cakeyid hex",
 		 " --cacert file [--dn subject-dn] [--san subjectAltName]+",
-		 "[--lifetime days] [--serial hex] [--crl uri [--crlissuer i] ]+ [--ocsp uri]+",
-		 "[--ca] [--pathlen len] [--flag serverAuth|clientAuth|crlSign|ocspSigning]+",
-		 "[--nc-permitted name] [--nc-excluded name]",
-		 "[--cert-policy oid [--cps-uri uri] [--user-notice text] ]+",
-		 "[--policy-map issuer-oid:subject-oid]",
+		 "[--lifetime days] [--serial hex] [--ca] [--pathlen len]",
+		 "[--flag serverAuth|clientAuth|crlSign|ocspSigning|msSmartcardLogon]+",
+		 "[--crl uri [--crlissuer i]]+ [--ocsp uri]+ [--nc-permitted name]",
+		 "[--nc-excluded name] [--policy-mapping issuer-oid:subject-oid]",
 		 "[--policy-explicit len] [--policy-inhibit len] [--policy-any len]",
+		 "[--cert-policy oid [--cps-uri uri] [--user-notice text]]+",
 		 "[--digest md5|sha1|sha224|sha256|sha384|sha512] [--outform der|pem]"},
 		{
 			{"help",			'h', 0, "show usage information"},
@@ -533,6 +570,9 @@ static void __attribute__ ((constructor))reg()
 			{"dn",				'd', 1, "distinguished name to include as subject"},
 			{"san",				'a', 1, "subjectAltName to include in certificate"},
 			{"lifetime",		'l', 1, "days the certificate is valid, default: 1095"},
+			{"not-before",		'F', 1, "date/time the validity of the cert starts"},
+			{"not-after",		'T', 1, "date/time the validity of the cert ends"},
+			{"dateform",		'D', 1, "strptime(3) input format, default: %d.%m.%y %T"},
 			{"serial",			's', 1, "serial number in hex, default: random"},
 			{"ca",				'b', 0, "include CA basicConstraint, default: no"},
 			{"pathlen",			'p', 1, "set path length constraint"},
@@ -554,4 +594,3 @@ static void __attribute__ ((constructor))reg()
 		}
 	});
 }
-

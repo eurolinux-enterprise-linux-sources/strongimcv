@@ -258,6 +258,7 @@ struct stroke_msg_t {
 			int mode;
 			int mobike;
 			int aggressive;
+			int pushmode;
 			int force_encap;
 			int fragmentation;
 			int ipcomp;
@@ -274,6 +275,7 @@ struct stroke_msg_t {
 			struct {
 				char *ike;
 				char *esp;
+				char *ah;
 			} algorithms;
 			struct {
 				int reauth;
@@ -302,6 +304,7 @@ struct stroke_msg_t {
 				u_int32_t mask;
 			} mark_in, mark_out;
 			stroke_end_t me, other;
+			u_int32_t replay_window;
 		} add_conn;
 
 		/* data for STR_ADD_CA */

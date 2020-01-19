@@ -133,6 +133,7 @@ static int gen()
 		return 1;
 	}
 	key->destroy(key);
+	set_file_mode(stdout, form);
 	if (fwrite(encoding.ptr, encoding.len, 1, stdout) != 1)
 	{
 		fprintf(stderr, "writing private key failed\n");
@@ -151,7 +152,7 @@ static void __attribute__ ((constructor))reg()
 	command_register((command_t) {
 		gen, 'g', "gen", "generate a new private key",
 		{"  [--type rsa|ecdsa] [--size bits] [--safe-primes]",
-		 "[--shares n] [--threshold l] [--outform der|pem|pgp]"},
+		 "[--shares n] [--threshold l] [--outform der|pem]"},
 		{
 			{"help",		'h', 0, "show usage information"},
 			{"type",		't', 1, "type of key, default: rsa"},
@@ -159,8 +160,7 @@ static void __attribute__ ((constructor))reg()
 			{"safe-primes", 'p', 0, "generate rsa safe primes"},
 			{"shares",		'n', 1, "number of private rsa key shares"},
 			{"threshold",	'l', 1, "minimum number of participating rsa key shares"},
-			{"outform",		'f', 1, "encoding of generated private key"},
+			{"outform",		'f', 1, "encoding of generated private key, default: der"},
 		}
 	});
 }
-

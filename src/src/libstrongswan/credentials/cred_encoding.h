@@ -87,6 +87,10 @@ enum cred_encoding_type_t {
 	PRIVKEY_PGP,
 	/** DNSKEY encoding */
 	PUBKEY_DNSKEY,
+	/** SSHKEY encoding (Base64) */
+	PUBKEY_SSHKEY,
+	/** RSA modulus only */
+	PUBKEY_RSA_MODULUS,
 
 	/** ASN.1 DER encoded certificate */
 	CERT_ASN1_DER,

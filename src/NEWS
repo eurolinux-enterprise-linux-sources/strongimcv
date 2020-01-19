@@ -1,3 +1,190 @@
+strongswan-5.2.0
+----------------
+
+- strongSwan has been ported to the Windows platform. Using a MinGW toolchain,
+  many parts of the strongSwan codebase run natively on Windows 7 / 2008 R2
+  and newer releases. charon-svc implements a Windows IKE service based on
+  libcharon, the kernel-iph and kernel-wfp plugins act as networking and IPsec
+  backend on the Windows platform. socket-win provides a native IKE socket
+  implementation, while winhttp fetches CRL and OCSP information using the
+  WinHTTP API.
+
+- The new vici plugin provides a Versatile IKE Configuration Interface for
+  charon. Using the stable IPC interface, external applications can configure,
+  control and monitor the IKE daemon. Instead of scripting the ipsec tool
+  and generating ipsec.conf, third party applications can use the new interface
+  for more control and better reliability.
+
+- Built upon the libvici client library, swanctl implements the first user of
+  the VICI interface. Together with a swanctl.conf configuration file,
+  connections can be defined, loaded and managed. swanctl provides a portable,
+  complete IKE configuration and control interface for the command line.
+  The first six swanctl example scenarios have been added.
+
+- The SWID IMV implements a JSON-based REST API which allows the exchange
+  of SWID tags and Software IDs with the strongTNC policy manager.
+
+- The SWID IMC can extract all installed packages from the dpkg (Debian,
+  Ubuntu, Linux Mint etc.), rpm (Fedora, RedHat, OpenSUSE, etc.), or
+  pacman (Arch Linux, Manjaro, etc.) package managers, respectively, using the
+  swidGenerator (https://github.com/strongswan/swidGenerator) which generates
+  SWID tags according to the new ISO/IEC 19770-2:2014 standard.
+
+- All IMVs now share the access requestor ID, device ID and product info
+  of an access requestor via a common imv_session object.
+
+- The Attestation IMC/IMV pair supports the IMA-NG measurement format
+  introduced with the Linux 3.13 kernel.
+
+- The aikgen tool generates an Attestation Identity Key bound to a TPM.
+
+- Implemented the PT-EAP transport protocol (RFC 7171) for Trusted Network
+  Connect.
+
+- The ipsec.conf replay_window option defines connection specific IPsec replay
+  windows. Original patch courtesy of Zheng Zhong and Christophe Gouault from
+  6Wind.
+
+
+strongswan-5.1.3
+----------------
+
+- Fixed an authentication bypass vulnerability triggered by rekeying an
+  unestablished IKEv2 SA while it gets actively initiated.  This allowed an
+  attacker to trick a peer's IKE_SA state to established, without the need to
+  provide any valid authentication credentials.  The vulnerability has been
+  registered as CVE-2014-2338.
+
+- The acert plugin evaluates X.509 Attribute Certificates. Group membership
+  information encoded as strings can be used to fulfill authorization checks
+  defined with the rightgroups option. Attribute Certificates can be loaded
+  locally or get exchanged in IKEv2 certificate payloads.
+
+- The pki command gained support to generate X.509 Attribute Certificates
+  using the --acert subcommand, while the --print command supports the ac type.
+  The openac utility has been removed in favor of the new pki functionality.
+
+- The libtls TLS 1.2 implementation as used by EAP-(T)TLS and other protocols
+  has been extended by AEAD mode support, currently limited to AES-GCM.
+
+
+strongswan-5.1.2
+----------------
+
+- A new default configuration file layout is introduced.  The new default
+  strongswan.conf file mainly includes config snippets from the strongswan.d
+  and strongswan.d/charon directories (the latter containing snippets for all
+  plugins).  The snippets, with commented defaults, are automatically
+  generated and installed, if they don't exist yet.  They are also installed
+  in $prefix/share/strongswan/templates so existing files can be compared to
+  the current defaults.
+
+- As an alternative to the non-extensible charon.load setting, the plugins
+  to load in charon (and optionally other applications) can now be determined
+  via the charon.plugins.<name>.load setting for each plugin (enabled in the
+  new default strongswan.conf file via the charon.load_modular option).
+  The load setting optionally takes a numeric priority value that allows
+  reordering the plugins (otherwise the default plugin order is preserved).
+
+- All strongswan.conf settings that were formerly defined in library specific
+  "global" sections are now application specific (e.g. settings for plugins in
+  libstrongswan.plugins can now be set only for charon in charon.plugins).
+  The old options are still supported, which now allows to define defaults for
+  all applications in the libstrongswan section.
+
+- The ntru libstrongswan plugin supports NTRUEncrypt as a post-quantum
+  computer IKE key exchange mechanism. The implementation is based on the
+  ntru-crypto library from the NTRUOpenSourceProject. The supported security
+  strengths are ntru112, ntru128, ntru192, and ntru256. Since the private DH
+  group IDs 1030..1033 have been assigned, the strongSwan Vendor ID must be
+  sent (charon.send_vendor_id = yes) in order to use NTRU.
+
+- Defined a TPMRA remote attestation workitem and added support for it to the
+  Attestation IMV.
+
+- Compatibility issues between IPComp (compress=yes) and leftfirewall=yes as
+  well as multiple subnets in left|rightsubnet have been fixed.
+
+- When enabling its "session" strongswan.conf option, the xauth-pam plugin opens
+  and closes a PAM session for each established IKE_SA. Patch courtesy of
+  Andrea Bonomi.
+
+- The strongSwan unit testing framework has been rewritten without the "check"
+  dependency for improved flexibility and portability. It now properly supports
+  multi-threaded and memory leak testing and brings a bunch of new test cases.
+
+
+strongswan-5.1.1
+----------------
+
+- Fixed a denial-of-service vulnerability and potential authorization bypass
+  triggered by a crafted ID_DER_ASN1_DN ID payload. The cause is an insufficient
+  length check when comparing such identities. The vulnerability has been
+  registered as CVE-2013-6075.
+
+- Fixed a denial-of-service vulnerability triggered by a crafted IKEv1
+  fragmentation payload. The cause is a NULL pointer dereference. The
+  vulnerability has been registered as CVE-2013-6076.
+
+- The lean stand-alone pt-tls-client can set up a RFC 6876 PT-TLS session
+  with a strongSwan policy enforcement point which uses the tnc-pdp charon
+  plugin.
+
+- The new TCG TNC SWID IMC/IMV pair supports targeted SWID requests for either
+  full SWID Tag or concise SWID Tag ID inventories.
+
+- The XAuth backend in eap-radius now supports multiple XAuth exchanges for
+  different credential types and display messages. All user input gets
+  concatenated and verified with a single User-Password RADIUS attribute on
+  the AAA. With an AAA supporting it, one for example can implement
+  Password+Token authentication with proper dialogs on iOS and OS X clients.
+
+- charon supports IKEv1 Mode Config exchange in push mode. The ipsec.conf
+  modeconfig=push option enables it for both client and server, the same way
+  as pluto used it.
+
+- Using the "ah" ipsec.conf keyword on both IKEv1 and IKEv2 connections,
+  charon can negotiate and install Security Associations integrity-protected by
+  the Authentication Header protocol. Supported are plain AH(+IPComp) SAs only,
+  but not the deprecated RFC2401 style ESP+AH bundles.
+
+- The generation of initialization vectors for IKE and ESP (when using libipsec)
+  is now modularized and IVs for e.g. AES-GCM are now correctly allocated
+  sequentially, while other algorithms like AES-CBC still use random IVs.
+
+- The left and right options in ipsec.conf can take multiple address ranges
+  and subnets. This allows connection matching against a larger set of
+  addresses, for example to use a different connection for clients connecting
+  from a internal network.
+
+- For all those who have a queasy feeling about the NIST elliptic curve set,
+  the Brainpool curves introduced for use with IKE by RFC 6932 might be a
+  more trustworthy alternative.
+
+- The kernel-libipsec userland IPsec backend now supports usage statistics,
+  volume based rekeying and accepts ESPv3 style TFC padded packets.
+
+- With two new strongswan.conf options fwmarks can be used to implement
+  host-to-host tunnels with kernel-libipsec.
+
+- load-tester supports transport mode connections and more complex traffic
+  selectors, including such using unique ports for each tunnel.
+
+- The new dnscert plugin provides support for authentication via CERT RRs that
+  are protected via DNSSEC.  The plugin was created by Ruslan N. Marchenko.
+
+- The eap-radius plugin supports forwarding of several Cisco Unity specific
+  RADIUS attributes in corresponding configuration payloads.
+
+- Database transactions are now abstracted and implemented by the two backends.
+  If you use MySQL make sure all tables use the InnoDB engine.
+
+- libstrongswan now can provide an experimental custom implementation of the
+  printf family functions based on klibc if neither Vstr nor glibc style printf
+  hooks are available. This can avoid the Vstr dependency on some systems at
+  the cost of slower and less complete printf functions.
+
+
 strongswan-5.1.0
 ----------------
 

@@ -53,7 +53,7 @@ METHOD(plugin_t, reload, bool,
 	private_ipseckey_plugin_t *this)
 {
 	bool enabled = lib->settings->get_bool(lib->settings,
-							"%s.plugins.ipseckey.enable", FALSE, charon->name);
+								"%s.plugins.ipseckey.enable", FALSE, lib->ns);
 
 	if (enabled != this->enabled)
 	{
@@ -109,6 +109,8 @@ METHOD(plugin_t, get_features, int,
 		PLUGIN_CALLBACK((plugin_feature_callback_t)plugin_cb, NULL),
 			PLUGIN_PROVIDE(CUSTOM, "ipseckey"),
 				PLUGIN_DEPENDS(RESOLVER),
+				PLUGIN_DEPENDS(PUBKEY, KEY_RSA),
+				PLUGIN_DEPENDS(CERT_ENCODE, CERT_TRUSTED_PUBKEY),
 	};
 	*features = f;
 	return countof(f);

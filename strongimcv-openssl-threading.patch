@@ -1,0 +1,42 @@
+diff -urNp strongswan-5.2.0/src/libstrongswan/plugins/openssl/openssl_plugin.c strongswan-5.2.0-current/src/libstrongswan/plugins/openssl/openssl_plugin.c
+--- strongswan-5.2.0/src/libstrongswan/plugins/openssl/openssl_plugin.c	2014-06-05 03:50:30.000000000 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/openssl/openssl_plugin.c	2014-09-18 16:12:39.171174020 -0400
+@@ -70,6 +70,7 @@ struct private_openssl_plugin_t {
+  */
+ static mutex_t **mutex = NULL;
+ 
++static bool multi_thread = TRUE;
+ /**
+  * Locking callback for static locks
+  */
+@@ -507,7 +508,10 @@ METHOD(plugin_t, destroy, void,
+ 	ENGINE_cleanup();
+ #endif /* OPENSSL_NO_ENGINE */
+ 	CRYPTO_cleanup_all_ex_data();
++	if(multi_thread)
++	{
+ 	threading_cleanup();
++	}
+ 	ERR_free_strings();
+ 
+ 	free(this);
+@@ -523,6 +527,8 @@ plugin_t *openssl_plugin_create()
+ 
+ 	fips_mode = lib->settings->get_int(lib->settings,
+ 							"%s.plugins.openssl.fips_mode", FIPS_MODE, lib->ns);
++	multi_thread = lib->settings->get_bool(lib->settings,
++                                                        "%s.plugins.openssl.multi_thread", TRUE, lib->ns);
+ #ifdef OPENSSL_FIPS
+ 	if (fips_mode)
+ 	{
+@@ -551,7 +557,10 @@ plugin_t *openssl_plugin_create()
+ 		},
+ 	);
+ 
++	if (multi_thread) 
++	{
+ 	threading_init();
++	}
+ 
+ 	OPENSSL_config(NULL);
+ 	OpenSSL_add_all_algorithms();

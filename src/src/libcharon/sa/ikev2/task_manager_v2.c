@@ -184,10 +184,8 @@ METHOD(task_manager_t, flush_queue, void,
 	}
 }
 
-/**
- * flush all tasks in the task manager
- */
-static void flush(private_task_manager_t *this)
+METHOD(task_manager_t, flush, void,
+	private_task_manager_t *this)
 {
 	flush_queue(this, TASK_QUEUE_QUEUED);
 	flush_queue(this, TASK_QUEUE_PASSIVE);
@@ -780,12 +778,21 @@ static status_t process_request(private_task_manager_t *this,
 			case CREATE_CHILD_SA:
 			{	/* FIXME: we should prevent this on mediation connections */
 				bool notify_found = FALSE, ts_found = FALSE;
+
+				if (this->ike_sa->get_state(this->ike_sa) == IKE_CREATED ||
+					this->ike_sa->get_state(this->ike_sa) == IKE_CONNECTING)
+				{
+					DBG1(DBG_IKE, "received CREATE_CHILD_SA request for "
+						 "unestablished IKE_SA, rejected");
+					return FAILED;
+				}
+
 				enumerator = message->create_payload_enumerator(message);
 				while (enumerator->enumerate(enumerator, &payload))
 				{
 					switch (payload->get_type(payload))
 					{
-						case NOTIFY:
+						case PLV2_NOTIFY:
 						{	/* if we find a rekey notify, its CHILD_SA rekeying */
 							notify = (notify_payload_t*)payload;
 							if (notify->get_notify_type(notify) == REKEY_SA &&
@@ -796,8 +803,8 @@ static status_t process_request(private_task_manager_t *this,
 							}
 							break;
 						}
-						case TRAFFIC_SELECTOR_INITIATOR:
-						case TRAFFIC_SELECTOR_RESPONDER:
+						case PLV2_TS_INITIATOR:
+						case PLV2_TS_RESPONDER:
 						{	/* if we don't find a TS, its IKE rekeying */
 							ts_found = TRUE;
 							break;
@@ -835,7 +842,7 @@ static status_t process_request(private_task_manager_t *this,
 				{
 					switch (payload->get_type(payload))
 					{
-						case NOTIFY:
+						case PLV2_NOTIFY:
 						{
 							notify = (notify_payload_t*)payload;
 							switch (notify->get_notify_type(notify))
@@ -868,7 +875,7 @@ static status_t process_request(private_task_manager_t *this,
 							}
 							break;
 						}
-						case DELETE:
+						case PLV2_DELETE:
 						{
 							delete = (delete_payload_t*)payload;
 							if (delete->get_protocol_id(delete) == PROTO_IKE)
@@ -1145,14 +1152,9 @@ METHOD(task_manager_t, process_message, status_t,
 					return FAILED;
 				}
 			}
-			if (this->ike_sa->get_state(this->ike_sa) == IKE_CREATED ||
-				this->ike_sa->get_state(this->ike_sa) == IKE_CONNECTING ||
-				msg->get_exchange_type(msg) != IKE_SA_INIT)
-			{	/* only do host updates based on verified messages */
-				if (!this->ike_sa->supports_extension(this->ike_sa, EXT_MOBIKE))
-				{	/* with MOBIKE, we do no implicit updates */
-					this->ike_sa->update_hosts(this->ike_sa, me, other, mid == 1);
-				}
+			if (!this->ike_sa->supports_extension(this->ike_sa, EXT_MOBIKE))
+			{	/* with MOBIKE, we do no implicit updates */
+				this->ike_sa->update_hosts(this->ike_sa, me, other, mid == 1);
 			}
 			charon->bus->message(charon->bus, msg, TRUE, TRUE);
 			if (msg->get_exchange_type(msg) == EXCHANGE_TYPE_UNDEFINED)
@@ -1198,10 +1200,13 @@ METHOD(task_manager_t, process_message, status_t,
 			if (this->ike_sa->get_state(this->ike_sa) == IKE_CREATED ||
 				this->ike_sa->get_state(this->ike_sa) == IKE_CONNECTING ||
 				msg->get_exchange_type(msg) != IKE_SA_INIT)
-			{	/* only do host updates based on verified messages */
+			{	/* only do updates based on verified messages (or initial ones) */
 				if (!this->ike_sa->supports_extension(this->ike_sa, EXT_MOBIKE))
-				{	/* with MOBIKE, we do no implicit updates */
-					this->ike_sa->update_hosts(this->ike_sa, me, other, FALSE);
+				{	/* with MOBIKE, we do no implicit updates.  we force an
+					 * update of the local address on IKE_SA_INIT, but never
+					 * for the remote address */
+					this->ike_sa->update_hosts(this->ike_sa, me, NULL, mid == 0);
+					this->ike_sa->update_hosts(this->ike_sa, NULL, other, FALSE);
 				}
 			}
 			charon->bus->message(charon->bus, msg, TRUE, TRUE);
@@ -1233,7 +1238,7 @@ METHOD(task_manager_t, process_message, status_t,
 		lib->scheduler->schedule_job(lib->scheduler, job,
 				lib->settings->get_int(lib->settings,
 						"%s.half_open_timeout", HALF_OPEN_IKE_SA_TIMEOUT,
-						charon->name));
+						lib->ns));
 	}
 	return SUCCESS;
 }
@@ -1571,6 +1576,7 @@ task_manager_v2_t *task_manager_v2_create(ike_sa_t *ike_sa)
 				.adopt_child_tasks = _adopt_child_tasks,
 				.busy = _busy,
 				.create_task_enumerator = _create_task_enumerator,
+				.flush = _flush,
 				.flush_queue = _flush_queue,
 				.destroy = _destroy,
 			},
@@ -1581,11 +1587,11 @@ task_manager_v2_t *task_manager_v2_create(ike_sa_t *ike_sa)
 		.active_tasks = array_create(0, 0),
 		.passive_tasks = array_create(0, 0),
 		.retransmit_tries = lib->settings->get_int(lib->settings,
-					"%s.retransmit_tries", RETRANSMIT_TRIES, charon->name),
+					"%s.retransmit_tries", RETRANSMIT_TRIES, lib->ns),
 		.retransmit_timeout = lib->settings->get_double(lib->settings,
-					"%s.retransmit_timeout", RETRANSMIT_TIMEOUT, charon->name),
+					"%s.retransmit_timeout", RETRANSMIT_TIMEOUT, lib->ns),
 		.retransmit_base = lib->settings->get_double(lib->settings,
-					"%s.retransmit_base", RETRANSMIT_BASE, charon->name),
+					"%s.retransmit_base", RETRANSMIT_BASE, lib->ns),
 	);
 
 	return &this->public;

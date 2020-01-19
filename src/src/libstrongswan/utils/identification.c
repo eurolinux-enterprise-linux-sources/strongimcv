@@ -15,15 +15,12 @@
  * for more details.
  */
 
-#define _GNU_SOURCE
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <string.h>
 #include <stdio.h>
 
 #include "identification.h"
 
+#include <utils/utils.h>
 #include <asn1/oid.h>
 #include <asn1/asn1.h>
 #include <crypto/hashers/hasher.h>
@@ -332,8 +329,13 @@ static void dntoa(chunk_t dn, char *buf, size_t len)
 		buf += written;
 		len -= written;
 
+		written = 0;
 		chunk_printable(data, &printable, '?');
-		written = snprintf(buf, len, "%.*s", (int)printable.len, printable.ptr);
+		if (printable.ptr)
+		{
+			written = snprintf(buf, len, "%.*s", (int)printable.len,
+							   printable.ptr);
+		}
 		chunk_free(&printable);
 		if (written < 0 || written >= len)
 		{
@@ -392,14 +394,24 @@ static status_t atodn(char *src, chunk_t *dn)
 	asn1_t rdn_type;
 	state_t state = SEARCH_OID;
 	status_t status = SUCCESS;
+	char sep = '\0';
 
 	do
 	{
 		switch (state)
 		{
 			case SEARCH_OID:
-				if (*src != ' ' && *src != '/' && *src !=  ',' && *src != '\0')
+				if (!sep && *src == '/')
+				{	/* use / as separator if the string starts with a slash */
+					sep = '/';
+					break;
+				}
+				if (*src != ' ' && *src != '\0')
 				{
+					if (!sep)
+					{	/* use , as separator by default */
+						sep = ',';
+					}
 					oid.ptr = src;
 					oid.len = 1;
 					state = READ_OID;
@@ -439,7 +451,7 @@ static status_t atodn(char *src, chunk_t *dn)
 				{
 					break;
 				}
-				else if (*src != ',' && *src != '/' && *src != '\0')
+				else if (*src != sep && *src != '\0')
 				{
 					name.ptr = src;
 					name.len = 1;
@@ -452,7 +464,7 @@ static status_t atodn(char *src, chunk_t *dn)
 				state = READ_NAME;
 				/* fall-through */
 			case READ_NAME:
-				if (*src != ',' && *src != '/' && *src != '\0')
+				if (*src != sep && *src != '\0')
 				{
 					name.len++;
 					if (*src == ' ')
@@ -602,7 +614,7 @@ static bool compare_dn(chunk_t t_dn, chunk_t o_dn, int *wc)
 		}
 	}
 	/* try a binary compare */
-	if (memeq(t_dn.ptr, o_dn.ptr, t_dn.len))
+	if (chunk_equals(t_dn, o_dn))
 	{
 		return TRUE;
 	}

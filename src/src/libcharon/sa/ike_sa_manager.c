@@ -28,6 +28,7 @@
 #include <threading/rwlock.h>
 #include <collections/linked_list.h>
 #include <crypto/hashers/hasher.h>
+#include <processing/jobs/delete_ike_sa_job.h>
 
 /* the default size of the hash table (MUST be a power of 2) */
 #define DEFAULT_HASHTABLE_SIZE 1
@@ -351,6 +352,11 @@ struct private_ike_sa_manager_t {
 	  * Segments of the "half-open" hash table.
 	 */
 	shareable_segment_t *half_open_segments;
+
+	/**
+	 * Total number of half-open IKE_SAs.
+	 */
+	refcount_t half_open_count;
 
 	/**
 	 * Hash table with connected_peers_t objects.
@@ -763,6 +769,7 @@ static void put_half_open(private_ike_sa_manager_t *this, entry_t *entry)
 		this->half_open_table[row] = item;
 	}
 	this->half_open_segments[segment].count++;
+	ref_get(&this->half_open_count);
 	lock->unlock(lock);
 }
 
@@ -802,6 +809,7 @@ static void remove_half_open(private_ike_sa_manager_t *this, entry_t *entry)
 				free(item);
 			}
 			this->half_open_segments[segment].count--;
+			ignore_result(ref_put(&this->half_open_count));
 			break;
 		}
 		prev = item;
@@ -963,7 +971,7 @@ static bool get_init_hash(private_ike_sa_manager_t *this, message_t *message,
 	{	/* this might be the case when flush() has been called */
 		return FALSE;
 	}
-	if (message->get_first_payload_type(message) == FRAGMENT_V1)
+	if (message->get_first_payload_type(message) == PLV1_FRAGMENT)
 	{	/* only hash the source IP, port and SPI for fragmented init messages */
 		u_int16_t port;
 		u_int64_t spi;
@@ -1305,7 +1313,7 @@ METHOD(ike_sa_manager_t, checkout_by_message, ike_sa_t*,
 
 			ike_id = entry->ike_sa->get_id(entry->ike_sa);
 			entry->checked_out = TRUE;
-			if (message->get_first_payload_type(message) != FRAGMENT_V1)
+			if (message->get_first_payload_type(message) != PLV1_FRAGMENT)
 			{
 				entry->processing = get_message_id_or_hash(message);
 			}
@@ -1764,6 +1772,40 @@ static void adopt_children(ike_sa_t *old, ike_sa_t *new)
 	enumerator->destroy(enumerator);
 }
 
+/**
+ * Check if the replaced IKE_SA might get reauthenticated from host
+ */
+static bool is_ikev1_reauth(ike_sa_t *duplicate, host_t *host)
+{
+	return duplicate->get_version(duplicate) == IKEV1 &&
+		   host->equals(host, duplicate->get_other_host(duplicate));
+}
+
+/**
+ * Delete an existing IKE_SA due to a unique replace policy
+ */
+static status_t enforce_replace(private_ike_sa_manager_t *this,
+								ike_sa_t *duplicate, ike_sa_t *new,
+								identification_t *other, host_t *host)
+{
+	charon->bus->alert(charon->bus, ALERT_UNIQUE_REPLACE);
+
+	if (is_ikev1_reauth(duplicate, host))
+	{
+		/* looks like a reauthentication attempt */
+		adopt_children(duplicate, new);
+		/* For IKEv1 we have to delay the delete for the old IKE_SA. Some
+		 * peers need to complete the new SA first, otherwise the quick modes
+		 * might get lost. */
+		lib->scheduler->schedule_job(lib->scheduler, (job_t*)
+			delete_ike_sa_job_create(duplicate->get_id(duplicate), TRUE), 10);
+		return SUCCESS;
+	}
+	DBG1(DBG_IKE, "deleting duplicate IKE_SA for peer '%Y' due to "
+		 "uniqueness policy", other);
+	return duplicate->delete(duplicate);
+}
+
 METHOD(ike_sa_manager_t, check_uniqueness, bool,
 	private_ike_sa_manager_t *this, ike_sa_t *ike_sa, bool force_replace)
 {
@@ -1815,20 +1857,17 @@ METHOD(ike_sa_manager_t, check_uniqueness, bool,
 					switch (policy)
 					{
 						case UNIQUE_REPLACE:
-							charon->bus->alert(charon->bus, ALERT_UNIQUE_REPLACE);
-							if (duplicate->get_version(duplicate) == IKEV1)
-							{
-								adopt_children(duplicate, ike_sa);
-							}
-							DBG1(DBG_IKE, "deleting duplicate IKE_SA for peer "
-									"'%Y' due to uniqueness policy", other);
-							status = duplicate->delete(duplicate);
+							status = enforce_replace(this, duplicate, ike_sa,
+													 other, other_host);
 							break;
 						case UNIQUE_KEEP:
-							cancel = TRUE;
-							/* we keep the first IKE_SA and delete all
-							 * other duplicates that might exist */
-							policy = UNIQUE_REPLACE;
+							if (!is_ikev1_reauth(duplicate, other_host))
+							{
+								cancel = TRUE;
+								/* we keep the first IKE_SA and delete all
+								 * other duplicates that might exist */
+								policy = UNIQUE_REPLACE;
+							}
 							break;
 						default:
 							break;
@@ -1930,13 +1969,7 @@ METHOD(ike_sa_manager_t, get_half_open_count, u_int,
 	}
 	else
 	{
-		for (segment = 0; segment < this->segment_count; segment++)
-		{
-			lock = this->half_open_segments[segment].lock;
-			lock->read_lock(lock);
-			count += this->half_open_segments[segment].count;
-			lock->unlock(lock);
-		}
+		count = (u_int)ref_cur(&this->half_open_count);
 	}
 	return count;
 }
@@ -2101,7 +2134,7 @@ ike_sa_manager_t *ike_sa_manager_create()
 		},
 	);
 
-	this->hasher = lib->crypto->create_hasher(lib->crypto, HASH_PREFERRED);
+	this->hasher = lib->crypto->create_hasher(lib->crypto, HASH_SHA1);
 	if (this->hasher == NULL)
 	{
 		DBG1(DBG_MGR, "manager initialization failed, no hasher supported");
@@ -2118,17 +2151,17 @@ ike_sa_manager_t *ike_sa_manager_create()
 	}
 
 	this->ikesa_limit = lib->settings->get_int(lib->settings,
-									"%s.ikesa_limit", 0, charon->name);
+											   "%s.ikesa_limit", 0, lib->ns);
 
 	this->table_size = get_nearest_powerof2(lib->settings->get_int(
 									lib->settings, "%s.ikesa_table_size",
-									DEFAULT_HASHTABLE_SIZE, charon->name));
+									DEFAULT_HASHTABLE_SIZE, lib->ns));
 	this->table_size = max(1, min(this->table_size, MAX_HASHTABLE_SIZE));
 	this->table_mask = this->table_size - 1;
 
 	this->segment_count = get_nearest_powerof2(lib->settings->get_int(
 									lib->settings, "%s.ikesa_table_segments",
-									DEFAULT_SEGMENT_COUNT, charon->name));
+									DEFAULT_SEGMENT_COUNT, lib->ns));
 	this->segment_count = max(1, min(this->segment_count, this->table_size));
 	this->segment_mask = this->segment_count - 1;
 
@@ -2168,6 +2201,6 @@ ike_sa_manager_t *ike_sa_manager_create()
 	}
 
 	this->reuse_ikesa = lib->settings->get_bool(lib->settings,
-										"%s.reuse_ikesa", TRUE, charon->name);
+											"%s.reuse_ikesa", TRUE, lib->ns);
 	return &this->public;
 }

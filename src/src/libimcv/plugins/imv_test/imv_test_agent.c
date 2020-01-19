@@ -103,7 +103,7 @@ static TNC_Result receive_msg(private_imv_test_agent_t *this, imv_state_t *state
 
 	/* add any new IMC and set its number of rounds */
 	rounds = lib->settings->get_int(lib->settings,
-								"libimcv.plugins.imv-test.rounds", 0);
+									"%s.plugins.imv-test.rounds", 0, lib->ns);
 	test_state = (imv_test_state_t*)state;
 	test_state->add_imc(test_state, in_msg->get_src_id(in_msg), rounds);
 
@@ -178,7 +178,7 @@ static TNC_Result receive_msg(private_imv_test_agent_t *this, imv_state_t *state
 		if (result != TNC_RESULT_SUCCESS)
 		{
 			return result;
-		}  
+		}
 		return this->agent->provide_recommendation(this->agent, state);
 	}
 
@@ -200,7 +200,7 @@ static TNC_Result receive_msg(private_imv_test_agent_t *this, imv_state_t *state
 		out_msg->add_attribute(out_msg, attr);
 
 		/* send PA-TNC message with excl flag set */
-		result = out_msg->send(out_msg, TRUE);	
+		result = out_msg->send(out_msg, TRUE);
 		out_msg->destroy(out_msg);
 
 		return result;
@@ -214,11 +214,11 @@ static TNC_Result receive_msg(private_imv_test_agent_t *this, imv_state_t *state
 		if (result != TNC_RESULT_SUCCESS)
 		{
 			return result;
-		}  
+		}
 		return this->agent->provide_recommendation(this->agent, state);
 	}
 	else
-	{	
+	{
 		return TNC_RESULT_SUCCESS;
 	}
  }
@@ -296,6 +296,14 @@ imv_agent_if_t *imv_test_agent_create(const char *name, TNC_IMVID id,
 									  TNC_Version *actual_version)
 {
 	private_imv_test_agent_t *this;
+	imv_agent_t *agent;
+
+	agent = imv_agent_create(name, msg_types, countof(msg_types), id,
+							 actual_version);
+	if (!agent)
+	{
+		return NULL;
+	}
 
 	INIT(this,
 		.public = {
@@ -307,15 +315,9 @@ imv_agent_if_t *imv_test_agent_create(const char *name, TNC_IMVID id,
 			.solicit_recommendation = _solicit_recommendation,
 			.destroy = _destroy,
 		},
-		.agent = imv_agent_create(name, msg_types, countof(msg_types), id,
-								  actual_version),
+		.agent = agent,
 	);
 
-	if (!this->agent)
-	{
-		destroy(this);
-		return NULL;
-	}
 	return &this->public;
 }
 

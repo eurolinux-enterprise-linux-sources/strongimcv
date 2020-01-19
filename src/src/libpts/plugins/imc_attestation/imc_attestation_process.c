@@ -25,23 +25,23 @@
 
 #include <pts/pts.h>
 
-#include <tcg/tcg_pts_attr_proto_caps.h>
-#include <tcg/tcg_pts_attr_meas_algo.h>
-#include <tcg/tcg_pts_attr_dh_nonce_params_req.h>
-#include <tcg/tcg_pts_attr_dh_nonce_params_resp.h>
-#include <tcg/tcg_pts_attr_dh_nonce_finish.h>
-#include <tcg/tcg_pts_attr_get_tpm_version_info.h>
-#include <tcg/tcg_pts_attr_tpm_version_info.h>
-#include <tcg/tcg_pts_attr_get_aik.h>
-#include <tcg/tcg_pts_attr_aik.h>
-#include <tcg/tcg_pts_attr_req_func_comp_evid.h>
-#include <tcg/tcg_pts_attr_gen_attest_evid.h>
-#include <tcg/tcg_pts_attr_simple_comp_evid.h>
-#include <tcg/tcg_pts_attr_simple_evid_final.h>
-#include <tcg/tcg_pts_attr_req_file_meas.h>
-#include <tcg/tcg_pts_attr_file_meas.h>
-#include <tcg/tcg_pts_attr_req_file_meta.h>
-#include <tcg/tcg_pts_attr_unix_file_meta.h>
+#include <tcg/pts/tcg_pts_attr_proto_caps.h>
+#include <tcg/pts/tcg_pts_attr_meas_algo.h>
+#include <tcg/pts/tcg_pts_attr_dh_nonce_params_req.h>
+#include <tcg/pts/tcg_pts_attr_dh_nonce_params_resp.h>
+#include <tcg/pts/tcg_pts_attr_dh_nonce_finish.h>
+#include <tcg/pts/tcg_pts_attr_get_tpm_version_info.h>
+#include <tcg/pts/tcg_pts_attr_tpm_version_info.h>
+#include <tcg/pts/tcg_pts_attr_get_aik.h>
+#include <tcg/pts/tcg_pts_attr_aik.h>
+#include <tcg/pts/tcg_pts_attr_req_func_comp_evid.h>
+#include <tcg/pts/tcg_pts_attr_gen_attest_evid.h>
+#include <tcg/pts/tcg_pts_attr_simple_comp_evid.h>
+#include <tcg/pts/tcg_pts_attr_simple_evid_final.h>
+#include <tcg/pts/tcg_pts_attr_req_file_meas.h>
+#include <tcg/pts/tcg_pts_attr_file_meas.h>
+#include <tcg/pts/tcg_pts_attr_req_file_meta.h>
+#include <tcg/pts/tcg_pts_attr_unix_file_meta.h>
 
 #include <utils/debug.h>
 #include <utils/lexparser.h>
@@ -109,8 +109,8 @@ bool imc_attestation_process(pa_tnc_attr_t *attr, imc_msg_t *msg,
 			int nonce_len, min_nonce_len;
 
 			nonce_len = lib->settings->get_int(lib->settings,
-								"libimcv.plugins.imc-attestation.nonce_len",
-								 DEFAULT_NONCE_LEN);
+								"%s.plugins.imc-attestation.nonce_len",
+								 DEFAULT_NONCE_LEN, lib->ns);
 
 			attr_cast = (tcg_pts_attr_dh_nonce_params_req_t*)attr;
 			min_nonce_len = attr_cast->get_min_nonce_len(attr_cast);
@@ -165,8 +165,8 @@ bool imc_attestation_process(pa_tnc_attr_t *attr, imc_msg_t *msg,
 			initiator_nonce = attr_cast->get_initiator_nonce(attr_cast);
 
 			nonce_len = lib->settings->get_int(lib->settings,
-								"libimcv.plugins.imc-attestation.nonce_len",
-								 DEFAULT_NONCE_LEN);
+								"%s.plugins.imc-attestation.nonce_len",
+								 DEFAULT_NONCE_LEN, lib->ns);
 			if (nonce_len != initiator_nonce.len)
 			{
 				DBG1(DBG_IMC, "initiator and responder DH nonces "
@@ -428,7 +428,8 @@ bool imc_attestation_process(pa_tnc_attr_t *attr, imc_msg_t *msg,
 			}
 
 			use_quote2 = lib->settings->get_bool(lib->settings,
-							"libimcv.plugins.imc-attestation.use_quote2", TRUE);
+							"%s.plugins.imc-attestation.use_quote2", TRUE,
+							lib->ns);
 			if (!pts->quote_tpm(pts, use_quote2, &pcr_composite, &quote_sig))
 			{
 				DBG1(DBG_IMC, "error occurred during TPM quote operation");

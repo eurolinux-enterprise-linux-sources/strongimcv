@@ -74,7 +74,7 @@ struct private_encryption_payload_t {
 	linked_list_t *payloads;
 
 	/**
-	 * Type of payload, ENCRYPTED or ENCRYPTED_V1
+	 * Type of payload, PLV2_ENCRYPTED or PLV1_ENCRYPTED
 	 */
 	payload_type_t type;
 };
@@ -145,7 +145,7 @@ METHOD(payload_t, verify, status_t,
 METHOD(payload_t, get_encoding_rules, int,
 	private_encryption_payload_t *this, encoding_rule_t **rules)
 {
-	if (this->type == ENCRYPTED)
+	if (this->type == PLV2_ENCRYPTED)
 	{
 		*rules = encodings_v2;
 		return countof(encodings_v2);
@@ -157,7 +157,7 @@ METHOD(payload_t, get_encoding_rules, int,
 METHOD(payload_t, get_header_length, int,
 	private_encryption_payload_t *this)
 {
-	if (this->type == ENCRYPTED)
+	if (this->type == PLV2_ENCRYPTED)
 	{
 		return 4;
 	}
@@ -241,7 +241,7 @@ METHOD(encryption_payload_t, add_payload, void,
 	{
 		this->next_payload = payload->get_type(payload);
 	}
-	payload->set_next_type(payload, NO_PAYLOAD);
+	payload->set_next_type(payload, PL_NONE);
 	this->payloads->insert_last(this->payloads, payload);
 	compute_length(this);
 }
@@ -281,7 +281,7 @@ static chunk_t generate(private_encryption_payload_t *this,
 			generator->generate_payload(generator, current);
 			current = next;
 		}
-		current->set_next_type(current, NO_PAYLOAD);
+		current->set_next_type(current, PL_NONE);
 		generator->generate_payload(generator, current);
 
 		chunk = generator->get_chunk(generator, &lenpos);
@@ -309,10 +309,11 @@ static chunk_t append_header(private_encryption_payload_t *this, chunk_t assoc)
 }
 
 METHOD(encryption_payload_t, encrypt, status_t,
-	private_encryption_payload_t *this, chunk_t assoc)
+	private_encryption_payload_t *this, u_int64_t mid, chunk_t assoc)
 {
 	chunk_t iv, plain, padding, icv, crypt;
 	generator_t *generator;
+	iv_gen_t *iv_gen;
 	rng_t *rng;
 	size_t bs;
 
@@ -326,6 +327,13 @@ METHOD(encryption_payload_t, encrypt, status_t,
 	if (!rng)
 	{
 		DBG1(DBG_ENC, "encrypting encryption payload failed, no RNG found");
+		return NOT_SUPPORTED;
+	}
+
+	iv_gen = this->aead->get_iv_gen(this->aead);
+	if (!iv_gen)
+	{
+		DBG1(DBG_ENC, "encrypting encryption payload failed, no IV generator");
 		return NOT_SUPPORTED;
 	}
 
@@ -356,7 +364,7 @@ METHOD(encryption_payload_t, encrypt, status_t,
 	crypt = chunk_create(plain.ptr, plain.len + padding.len);
 	generator->destroy(generator);
 
-	if (!rng->get_bytes(rng, iv.len, iv.ptr) ||
+	if (!iv_gen->get_iv(iv_gen, mid, iv.len, iv.ptr) ||
 		!rng->get_bytes(rng, padding.len - 1, padding.ptr))
 	{
 		DBG1(DBG_ENC, "encrypting encryption payload failed, no IV or padding");
@@ -388,7 +396,7 @@ METHOD(encryption_payload_t, encrypt, status_t,
 }
 
 METHOD(encryption_payload_t, encrypt_v1, status_t,
-	private_encryption_payload_t *this, chunk_t iv)
+	private_encryption_payload_t *this, u_int64_t mid, chunk_t iv)
 {
 	generator_t *generator;
 	chunk_t plain, padding;
@@ -439,7 +447,7 @@ static status_t parse(private_encryption_payload_t *this, chunk_t plain)
 
 	parser = parser_create(plain);
 	type = this->next_payload;
-	while (type != NO_PAYLOAD)
+	while (type != PL_NONE)
 	{
 		payload_t *payload;
 
@@ -610,13 +618,13 @@ encryption_payload_t *encryption_payload_create(payload_type_t type)
 			.decrypt = _decrypt,
 			.destroy = _destroy,
 		},
-		.next_payload = NO_PAYLOAD,
+		.next_payload = PL_NONE,
 		.payloads = linked_list_create(),
 		.type = type,
 	);
 	this->payload_length = get_header_length(this);
 
-	if (type == ENCRYPTED_V1)
+	if (type == PLV1_ENCRYPTED)
 	{
 		this->public.encrypt = _encrypt_v1;
 		this->public.decrypt = _decrypt_v1;

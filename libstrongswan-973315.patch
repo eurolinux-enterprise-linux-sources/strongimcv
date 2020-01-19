@@ -1,0 +1,137 @@
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/Makefile.am strongswan-5.2.0-current/src/libstrongswan/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/Makefile.am	2014-07-18 15:24:06.270406402 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/Makefile.am	2014-07-18 15:35:36.143088159 -0400
+@@ -120,7 +120,7 @@ AM_CFLAGS = \
+ 	@COVERAGE_CFLAGS@
+ 
+ AM_LDFLAGS = \
+-	-no-undefined
++	-no-undefined -rdynamic
+ 
+ AM_YFLAGS = -v -d
+ 
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/cmac/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/cmac/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/cmac/Makefile.am	2014-07-18 15:24:06.268406429 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/cmac/Makefile.am	2014-07-18 15:35:36.143088159 -0400
+@@ -13,4 +13,5 @@ endif
+ libstrongswan_cmac_la_SOURCES = \
+ 	cmac_plugin.h cmac_plugin.c cmac.h cmac.c
+ 
+-libstrongswan_cmac_la_LDFLAGS = -module -avoid-version
++libstrongswan_cmac_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_cmac_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la
+\ No newline at end of file
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/constraints/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/constraints/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/constraints/Makefile.am	2014-07-18 15:24:06.267406442 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/constraints/Makefile.am	2014-07-18 15:35:36.143088159 -0400
+@@ -14,4 +14,5 @@ libstrongswan_constraints_la_SOURCES = \
+ 	constraints_plugin.h constraints_plugin.c \
+ 	constraints_validator.h constraints_validator.c
+ 
+-libstrongswan_constraints_la_LDFLAGS = -module -avoid-version
++libstrongswan_constraints_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_constraints_la_LIBADD =  $(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/hmac/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/hmac/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/hmac/Makefile.am	2014-07-18 15:24:06.258406564 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/hmac/Makefile.am	2014-07-18 15:35:36.144088171 -0400
+@@ -13,4 +13,5 @@ endif
+ libstrongswan_hmac_la_SOURCES = \
+ 	hmac_plugin.h hmac_plugin.c hmac.h hmac.c
+ 
+-libstrongswan_hmac_la_LDFLAGS = -module -avoid-version
++libstrongswan_hmac_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_hmac_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/nonce/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/nonce/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/nonce/Makefile.am	2014-07-18 15:24:06.260406537 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/nonce/Makefile.am	2014-07-18 15:35:36.144088171 -0400
+@@ -14,4 +14,5 @@ libstrongswan_nonce_la_SOURCES = \
+ 	nonce_plugin.h nonce_plugin.c \
+ 	nonce_nonceg.c nonce_nonceg.h
+ 
+-libstrongswan_nonce_la_LDFLAGS = -module -avoid-version
++libstrongswan_nonce_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_nonce_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/openssl/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/openssl/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/openssl/Makefile.am	2014-07-18 15:24:06.266406456 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/openssl/Makefile.am	2014-07-18 15:46:01.599640875 -0400
+@@ -31,5 +31,6 @@ libstrongswan_openssl_la_SOURCES = \
+ 	openssl_hmac.c openssl_hmac.h \
+ 	openssl_gcm.c openssl_gcm.h
+ 
+-libstrongswan_openssl_la_LDFLAGS = -module -avoid-version
+-libstrongswan_openssl_la_LIBADD  = $(OPENSSL_LIB)
++libstrongswan_openssl_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_openssl_la_LIBADD  = $(OPENSSL_LIB) \
++	$(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/pem/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/pem/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/pem/Makefile.am	2014-07-18 15:24:06.260406537 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/pem/Makefile.am	2014-07-18 15:35:36.144088171 -0400
+@@ -15,4 +15,5 @@ libstrongswan_pem_la_SOURCES = \
+ 	pem_builder.c pem_builder.h \
+ 	pem_encoder.c pem_encoder.h
+ 
+-libstrongswan_pem_la_LDFLAGS = -module -avoid-version
++libstrongswan_pem_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_pem_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/pgp/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/pgp/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/pgp/Makefile.am	2014-07-18 15:24:06.263406496 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/pgp/Makefile.am	2014-07-18 15:35:36.144088171 -0400
+@@ -17,4 +17,5 @@ libstrongswan_pgp_la_SOURCES = \
+ 	pgp_encoder.h pgp_encoder.c \
+ 	pgp_builder.h pgp_builder.c
+ 
+-libstrongswan_pgp_la_LDFLAGS = -module -avoid-version
++libstrongswan_pgp_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_pgp_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/random/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/random/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/random/Makefile.am	2014-07-18 15:24:06.264406483 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/random/Makefile.am	2014-07-18 15:35:36.144088171 -0400
+@@ -16,4 +16,5 @@ libstrongswan_random_la_SOURCES = \
+ 	random_plugin.h random_plugin.c \
+ 	random_rng.c random_rng.h
+ 
+-libstrongswan_random_la_LDFLAGS = -module -avoid-version
++libstrongswan_random_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_random_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/revocation/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/revocation/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/revocation/Makefile.am	2014-07-18 15:24:06.268406429 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/revocation/Makefile.am	2014-07-18 15:35:36.144088171 -0400
+@@ -14,4 +14,5 @@ libstrongswan_revocation_la_SOURCES = \
+ 	revocation_plugin.h revocation_plugin.c \
+ 	revocation_validator.h revocation_validator.c
+ 
+-libstrongswan_revocation_la_LDFLAGS = -module -avoid-version
++libstrongswan_revocation_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_revocation_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/sqlite/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/sqlite/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/sqlite/Makefile.am	2014-07-18 15:24:06.267406442 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/sqlite/Makefile.am	2014-07-18 15:35:36.144088171 -0400
+@@ -14,5 +14,6 @@ libstrongswan_sqlite_la_SOURCES = \
+ 	sqlite_plugin.h sqlite_plugin.c \
+ 	sqlite_database.h sqlite_database.c
+ 
+-libstrongswan_sqlite_la_LDFLAGS = -module -avoid-version
+-libstrongswan_sqlite_la_LIBADD  = -lsqlite3
++libstrongswan_sqlite_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_sqlite_la_LIBADD  = -lsqlite3 \
++	$(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/x509/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/x509/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/x509/Makefile.am	2014-07-18 15:24:06.264406483 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/x509/Makefile.am	2014-07-18 15:35:36.144088171 -0400
+@@ -19,4 +19,5 @@ libstrongswan_x509_la_SOURCES = \
+ 	x509_ocsp_request.h x509_ocsp_request.c \
+ 	x509_ocsp_response.h x509_ocsp_response.c
+ 
+-libstrongswan_x509_la_LDFLAGS = -module -avoid-version
++libstrongswan_x509_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_x509_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/xcbc/Makefile.am strongswan-5.2.0-current/src/libstrongswan/plugins/xcbc/Makefile.am
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/xcbc/Makefile.am	2014-07-18 15:24:06.261406523 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/xcbc/Makefile.am	2014-07-18 15:35:36.145088176 -0400
+@@ -13,4 +13,5 @@ endif
+ libstrongswan_xcbc_la_SOURCES = \
+ 	xcbc_plugin.h xcbc_plugin.c xcbc.h xcbc.c
+ 
+-libstrongswan_xcbc_la_LDFLAGS = -module -avoid-version
++libstrongswan_xcbc_la_LDFLAGS = -no-undefined -module -avoid-version
++libstrongswan_xcbc_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la

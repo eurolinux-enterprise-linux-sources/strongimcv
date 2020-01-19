@@ -14,6 +14,12 @@
  * for more details.
  */
 
+#include <library.h>
+#include <utils/debug.h>
+#include <threading/thread.h>
+#include <threading/mutex.h>
+#include <threading/thread_value.h>
+
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/conf.h>
@@ -24,12 +30,6 @@
 #endif
 
 #include "openssl_plugin.h"
-
-#include <library.h>
-#include <utils/debug.h>
-#include <threading/thread.h>
-#include <threading/mutex.h>
-#include <threading/thread_value.h>
 #include "openssl_util.h"
 #include "openssl_crypter.h"
 #include "openssl_hasher.h"
@@ -298,9 +298,6 @@ METHOD(plugin_t, get_features, int,
 			PLUGIN_PROVIDE(CRYPTER, ENCR_NULL, 0),
 		/* hashers */
 		PLUGIN_REGISTER(HASHER, openssl_hasher_create),
-#ifndef OPENSSL_NO_SHA1
-			PLUGIN_PROVIDE(HASHER, HASH_SHA1),
-#endif
 #ifndef OPENSSL_NO_MD2
 			PLUGIN_PROVIDE(HASHER, HASH_MD2),
 #endif
@@ -309,6 +306,9 @@ METHOD(plugin_t, get_features, int,
 #endif
 #ifndef OPENSSL_NO_MD5
 			PLUGIN_PROVIDE(HASHER, HASH_MD5),
+#endif
+#ifndef OPENSSL_NO_SHA1
+			PLUGIN_PROVIDE(HASHER, HASH_SHA1),
 #endif
 #ifndef OPENSSL_NO_SHA256
 			PLUGIN_PROVIDE(HASHER, HASH_SHA224),
@@ -452,6 +452,10 @@ METHOD(plugin_t, get_features, int,
 			PLUGIN_PROVIDE(DH, ECP_521_BIT),
 			PLUGIN_PROVIDE(DH, ECP_224_BIT),
 			PLUGIN_PROVIDE(DH, ECP_192_BIT),
+			PLUGIN_PROVIDE(DH, ECP_224_BP),
+			PLUGIN_PROVIDE(DH, ECP_256_BP),
+			PLUGIN_PROVIDE(DH, ECP_384_BP),
+			PLUGIN_PROVIDE(DH, ECP_512_BP),
 #endif
 #ifndef OPENSSL_NO_ECDSA
 		/* EC private/public key loading */
@@ -518,15 +522,17 @@ plugin_t *openssl_plugin_create()
 	int fips_mode;
 
 	fips_mode = lib->settings->get_int(lib->settings,
-						"libstrongswan.plugins.openssl.fips_mode", FIPS_MODE);
+							"%s.plugins.openssl.fips_mode", FIPS_MODE, lib->ns);
 #ifdef OPENSSL_FIPS
-	if (!FIPS_mode_set(fips_mode))
+	if (fips_mode)
 	{
-		DBG1(DBG_LIB, "unable to set openssl FIPS mode(%d)", fips_mode);
-		return NULL;
+		if (FIPS_mode() != fips_mode && !FIPS_mode_set(fips_mode))
+		{
+			DBG1(DBG_LIB, "unable to set openssl FIPS mode(%d) from (%d)",
+				 fips_mode, FIPS_mode());
+			return NULL;
+		}
 	}
-	DBG1(DBG_LIB, "openssl FIPS mode(%d) - %sabled ",fips_mode,
-				   fips_mode ? "en" : "dis");
 #else
 	if (fips_mode)
 	{
@@ -549,6 +555,13 @@ plugin_t *openssl_plugin_create()
 
 	OPENSSL_config(NULL);
 	OpenSSL_add_all_algorithms();
+
+#ifdef OPENSSL_FIPS
+	/* we do this here as it may have been enabled via openssl.conf */
+	fips_mode = FIPS_mode();
+	dbg(DBG_LIB, strpfx(lib->ns, "charon") ? 1 : 2,
+		"openssl FIPS mode(%d) - %sabled ", fips_mode, fips_mode ? "en" : "dis");
+#endif /* OPENSSL_FIPS */
 
 #ifndef OPENSSL_NO_ENGINE
 	/* activate support for hardware accelerators */

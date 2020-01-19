@@ -1,0 +1,25 @@
+diff -urNp strongswan-5.2.0/src/libtls/tls_protection.c strongswan-5.2.0-patch/src/libtls/tls_protection.c
+--- strongswan-5.2.0/src/libtls/tls_protection.c	2014-05-14 08:02:02.000000000 -0400
++++ strongswan-5.2.0-patch/src/libtls/tls_protection.c	2015-01-08 15:28:03.929059559 -0500
+@@ -101,14 +101,16 @@ METHOD(tls_protection_t, build, status_t
+ 	status_t status;
+ 
+ 	status = this->compression->build(this->compression, type, data);
+-	if (*type == TLS_CHANGE_CIPHER_SPEC)
+-	{
+-		this->seq_out = 0;
+-		return status;
+-	}
+ 
+ 	if (status == NEED_MORE)
+ 	{
++
++        	if (*type == TLS_CHANGE_CIPHER_SPEC)
++        	{
++                	this->seq_out = 0;
++                	return status;
++        	}
++
+ 		if (this->aead_out)
+ 		{
+ 			if (!this->aead_out->encrypt(this->aead_out, this->version,

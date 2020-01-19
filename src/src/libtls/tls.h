@@ -107,6 +107,8 @@ enum tls_purpose_t {
 	TLS_PURPOSE_EAP_PEAP,
 	/** non-EAP TLS */
 	TLS_PURPOSE_GENERIC,
+	/** non-EAP TLS accepting NULL encryption */
+	TLS_PURPOSE_GENERIC_NULLOK,
 	/** EAP binding for TNC */
 	TLS_PURPOSE_EAP_TNC
 };
@@ -198,6 +200,13 @@ struct tls_t {
 	 * @return			server identity
 	 */
 	identification_t* (*get_server_id)(tls_t *this);
+
+	/**
+	 * Set the peer identity.
+	 *
+	 * @param id		peer identity
+	 */
+	void (*set_peer_id)(tls_t *this, identification_t *id);
 
 	/**
 	 * Return the peer identity.

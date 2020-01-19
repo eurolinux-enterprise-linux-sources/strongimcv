@@ -69,6 +69,8 @@ enum kernel_feature_t {
 	KERNEL_REQUIRE_EXCLUDE_ROUTE = (1<<1),
 	/** IPsec implementation requires UDP encapsulation of ESP packets */
 	KERNEL_REQUIRE_UDP_ENCAPSULATION = (1<<2),
+	/** IPsec backend does not require a policy reinstall on SA updates */
+	KERNEL_NO_POLICY_UPDATES = (1<<3),
 };
 
 /**
@@ -145,6 +147,7 @@ struct kernel_interface_t {
 	 * @param mode			mode of the SA (tunnel, transport)
 	 * @param ipcomp		IPComp transform to use
 	 * @param cpi			CPI for IPComp
+	 * @param replay_window	anti-replay window size
 	 * @param initiator		TRUE if initiator of the exchange creating this SA
 	 * @param encap			enable UDP encapsulation for NAT traversal
 	 * @param esn			TRUE to use Extended Sequence Numbers
@@ -160,6 +163,7 @@ struct kernel_interface_t {
 						u_int16_t enc_alg, chunk_t enc_key,
 						u_int16_t int_alg, chunk_t int_key,
 						ipsec_mode_t mode, u_int16_t ipcomp, u_int16_t cpi,
+						u_int32_t replay_window,
 						bool initiator, bool encap, bool esn, bool inbound,
 						traffic_selector_t *src_ts, traffic_selector_t *dst_ts);
 
@@ -200,12 +204,12 @@ struct kernel_interface_t {
 	 * @param mark			optional mark for this SA
 	 * @param[out] bytes	the number of bytes processed by SA
 	 * @param[out] packets	number of packets processed by SA
-	 * @param[out] time		last time of SA use
+	 * @param[out] time		last (monotonic) time of SA use
 	 * @return				SUCCESS if operation completed
 	 */
 	status_t (*query_sa) (kernel_interface_t *this, host_t *src, host_t *dst,
 						  u_int32_t spi, u_int8_t protocol, mark_t mark,
-						  u_int64_t *bytes, u_int64_t *packets, u_int32_t *time);
+						  u_int64_t *bytes, u_int64_t *packets, time_t *time);
 
 	/**
 	 * Delete a previously installed SA from the SAD.
@@ -264,14 +268,14 @@ struct kernel_interface_t {
 	 * @param dst_ts		traffic selector to match traffic dest
 	 * @param direction		direction of traffic, POLICY_(IN|OUT|FWD)
 	 * @param mark			optional mark
-	 * @param[out] use_time	the time of this SA's last use
+	 * @param[out] use_time	the (monotonic) time of this SA's last use
 	 * @return				SUCCESS if operation completed
 	 */
 	status_t (*query_policy) (kernel_interface_t *this,
 							  traffic_selector_t *src_ts,
 							  traffic_selector_t *dst_ts,
 							  policy_dir_t direction, mark_t mark,
-							  u_int32_t *use_time);
+							  time_t *use_time);
 
 	/**
 	 * Remove a policy from the SPD.
@@ -326,9 +330,12 @@ struct kernel_interface_t {
 	 * for the given source to dest.
 	 *
 	 * @param dest			target destination address
+	 * @param prefix		prefix length if dest is a subnet, -1 for auto
+	 * @param src			source address to check, or NULL
 	 * @return				next hop address, NULL if unreachable
 	 */
-	host_t* (*get_nexthop)(kernel_interface_t *this, host_t *dest, host_t *src);
+	host_t* (*get_nexthop)(kernel_interface_t *this, host_t *dest,
+						   int prefix, host_t *src);
 
 	/**
 	 * Get the interface name of a local address. Interfaces that are down or

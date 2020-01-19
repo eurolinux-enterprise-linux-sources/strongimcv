@@ -14,8 +14,6 @@
  */
 
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
 
 #include "host_resolver.h"
 
@@ -355,11 +353,11 @@ host_resolver_t *host_resolver_create()
 	);
 
 	this->min_threads = max(0, lib->settings->get_int(lib->settings,
-									"libstrongswan.host_resolver.min_threads",
-									 MIN_THREADS_DEFAULT));
+												"%s.host_resolver.min_threads",
+												MIN_THREADS_DEFAULT, lib->ns));
 	this->max_threads = max(this->min_threads ?: 1,
 							lib->settings->get_int(lib->settings,
-									"libstrongswan.host_resolver.max_threads",
-									 MAX_THREADS_DEFAULT));
+												"%s.host_resolver.max_threads",
+												MAX_THREADS_DEFAULT, lib->ns));
 	return &this->public;
 }

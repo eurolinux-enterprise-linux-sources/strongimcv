@@ -5,7 +5,6 @@ bus/bus.c bus/bus.h \
 bus/listeners/listener.h \
 bus/listeners/logger.h \
 bus/listeners/file_logger.c bus/listeners/file_logger.h \
-bus/listeners/sys_logger.c bus/listeners/sys_logger.h \
 config/backend_manager.c config/backend_manager.h config/backend.h \
 config/child_cfg.c config/child_cfg.h \
 config/ike_cfg.c config/ike_cfg.h \
@@ -125,6 +124,10 @@ processing/jobs/dpd_timeout_job.c processing/jobs/dpd_timeout_job.h \
 processing/jobs/adopt_children_job.c processing/jobs/adopt_children_job.h
 endif
 
+if USE_SYSLOG
+  libcharon_la_SOURCES += \
+    bus/listeners/sys_logger.c bus/listeners/sys_logger.h
+endif
 
 daemon.lo :		$(top_builddir)/config.status
 
@@ -136,7 +139,17 @@ AM_CPPFLAGS = \
 	-DIPSEC_DIR=\"${ipsecdir}\" \
 	-DIPSEC_PIDDIR=\"${piddir}\"
 
-libcharon_la_LIBADD = -lm $(PTHREADLIB) $(DLLIB) $(SOCKLIB)
+AM_LDFLAGS = \
+  -no-undefined
+
+libcharon_la_LIBADD = \
+  $(top_builddir)/src/libstrongswan/libstrongswan.la \
+  $(top_builddir)/src/libhydra/libhydra.la \
+  -lm $(PTHREADLIB) $(DLLIB) $(SOCKLIB)
+
+if USE_WINDOWS
+  libcharon_la_LIBADD += -lws2_32
+endif
 
 EXTRA_DIST = Android.mk
 
@@ -182,6 +195,13 @@ if MONOLITHIC
 endif
 endif
 
+if USE_SOCKET_WIN
+  SUBDIRS += plugins/socket_win
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/socket_win/libstrongswan-socket-win.la
+endif
+endif
+
 if USE_FARP
   SUBDIRS += plugins/farp
 if MONOLITHIC
@@ -196,6 +216,13 @@ if MONOLITHIC
 endif
 endif
 
+if USE_VICI
+  SUBDIRS += plugins/vici
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/vici/libstrongswan-vici.la
+endif
+endif
+
 if USE_SMP
   SUBDIRS += plugins/smp
 if MONOLITHIC
@@ -207,6 +234,13 @@ if USE_SQL
   SUBDIRS += plugins/sql
 if MONOLITHIC
   libcharon_la_LIBADD += plugins/sql/libstrongswan-sql.la
+endif
+endif
+
+if USE_DNSCERT
+  SUBDIRS += plugins/dnscert
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/dnscert/libstrongswan-dnscert.la
 endif
 endif
 
@@ -385,48 +419,6 @@ if MONOLITHIC
 endif
 endif
 
-if USE_TNC_IMC
-  SUBDIRS += plugins/tnc_imc
-if MONOLITHIC
-  libcharon_la_LIBADD += plugins/tnc_imc/libstrongswan-tnc-imc.la
-endif
-endif
-
-if USE_TNC_IMV
-  SUBDIRS += plugins/tnc_imv
-if MONOLITHIC
-  libcharon_la_LIBADD += plugins/tnc_imv/libstrongswan-tnc-imv.la
-endif
-endif
-
-if USE_TNC_TNCCS
-  SUBDIRS += plugins/tnc_tnccs
-if MONOLITHIC
-  libcharon_la_LIBADD += plugins/tnc_tnccs/libstrongswan-tnc-tnccs.la
-endif
-endif
-
-if USE_TNCCS_11
-  SUBDIRS += plugins/tnccs_11
-if MONOLITHIC
-  libcharon_la_LIBADD += plugins/tnccs_11/libstrongswan-tnccs-11.la
-endif
-endif
-
-if USE_TNCCS_20
-  SUBDIRS += plugins/tnccs_20
-if MONOLITHIC
-  libcharon_la_LIBADD += plugins/tnccs_20/libstrongswan-tnccs-20.la
-endif
-endif
-
-if USE_TNCCS_DYNAMIC
-  SUBDIRS += plugins/tnccs_dynamic
-if MONOLITHIC
-  libcharon_la_LIBADD += plugins/tnccs_dynamic/libstrongswan-tnccs-dynamic.la
-endif
-endif
-
 if USE_LIBTNCCS
 if MONOLITHIC
   # otherwise this library is linked to the respective plugins
@@ -494,6 +486,20 @@ if USE_KERNEL_LIBIPSEC
   SUBDIRS += plugins/kernel_libipsec
 if MONOLITHIC
   libcharon_la_LIBADD += plugins/kernel_libipsec/libstrongswan-kernel-libipsec.la
+endif
+endif
+
+if USE_KERNEL_WFP
+  SUBDIRS += plugins/kernel_wfp
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/kernel_wfp/libstrongswan-kernel-wfp.la
+endif
+endif
+
+if USE_KERNEL_IPH
+  SUBDIRS += plugins/kernel_iph
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/kernel_iph/libstrongswan-kernel-iph.la
 endif
 endif
 

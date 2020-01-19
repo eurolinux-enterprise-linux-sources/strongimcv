@@ -32,16 +32,25 @@ ENUM_NEXT(diffie_hellman_group_names, MODP_2048_BIT, ECP_521_BIT, MODP_1536_BIT,
 	"ECP_256",
 	"ECP_384",
 	"ECP_521");
-ENUM_NEXT(diffie_hellman_group_names, MODP_1024_160, ECP_224_BIT, ECP_521_BIT,
+ENUM_NEXT(diffie_hellman_group_names, MODP_1024_160, ECP_512_BP, ECP_521_BIT,
 	"MODP_1024_160",
 	"MODP_2048_224",
 	"MODP_2048_256",
 	"ECP_192",
-	"ECP_224");
-ENUM_NEXT(diffie_hellman_group_names, MODP_NULL, MODP_CUSTOM, ECP_224_BIT,
+	"ECP_224",
+	"ECP_224_BP",
+	"ECP_256_BP",
+	"ECP_384_BP",
+	"ECP_512_BP");
+ENUM_NEXT(diffie_hellman_group_names, MODP_NULL, MODP_CUSTOM, ECP_512_BP,
 	"MODP_NULL",
 	"MODP_CUSTOM");
-ENUM_END(diffie_hellman_group_names, MODP_CUSTOM);
+ENUM_NEXT(diffie_hellman_group_names, NTRU_112_BIT, NTRU_256_BIT, MODP_CUSTOM,
+	"NTRU_112",
+	"NTRU_128",
+	"NTRU_192",
+	"NTRU_256");
+ENUM_END(diffie_hellman_group_names, NTRU_256_BIT);
 
 
 /**
@@ -435,7 +444,7 @@ diffie_hellman_params_t *diffie_hellman_get_params(diffie_hellman_group_t group)
 			{
 				if (!dh_params[i].public.subgroup.len &&
 					lib->settings->get_int(lib->settings,
-								"libstrongswan.dh_exponent_ansi_x9_42", TRUE))
+									"%s.dh_exponent_ansi_x9_42", TRUE, lib->ns))
 				{
 					dh_params[i].public.exp_len = dh_params[i].public.prime.len;
 				}
@@ -462,6 +471,10 @@ bool diffie_hellman_group_is_ec(diffie_hellman_group_t group)
 		case ECP_521_BIT:
 		case ECP_192_BIT:
 		case ECP_224_BIT:
+		case ECP_224_BP:
+		case ECP_256_BP:
+		case ECP_384_BP:
+		case ECP_512_BP:
 			return TRUE;
 		default:
 			return FALSE;

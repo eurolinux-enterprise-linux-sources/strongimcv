@@ -1,0 +1,10 @@
+diff -urNp strongswan-5.2.0-patched/init/systemd/strongswan.service.in strongswan-5.2.0-current/init/systemd/strongswan.service.in
+--- strongswan-5.2.0-patched/init/systemd/strongswan.service.in	2014-07-18 15:24:06.322405699 -0400
++++ strongswan-5.2.0-current/init/systemd/strongswan.service.in	2014-07-18 15:47:58.562060569 -0400
+@@ -1,5 +1,5 @@
+ [Unit]
+-Description=strongSwan IPsec
++Description=strongimcv TNC
+ After=syslog.target
+ 
+ [Service]

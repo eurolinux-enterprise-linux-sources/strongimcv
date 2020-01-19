@@ -445,6 +445,7 @@ METHOD(socket_t, sender, status_t,
 #elif defined(IP_SENDSRCADDR)
 			char buf[CMSG_SPACE(sizeof(struct in_addr))];
 #endif
+			memset(buf, 0, sizeof(buf));
 			msg.msg_control = buf;
 			msg.msg_controllen = sizeof(buf);
 			cmsg = CMSG_FIRSTHDR(&msg);
@@ -453,7 +454,6 @@ METHOD(socket_t, sender, status_t,
 			cmsg->cmsg_type = IP_PKTINFO;
 			cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
 			pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
-			memset(pktinfo, 0, sizeof(struct in_pktinfo));
 			addr = &pktinfo->ipi_spec_dst;
 #elif defined(IP_SENDSRCADDR)
 			cmsg->cmsg_type = IP_SENDSRCADDR;
@@ -471,6 +471,7 @@ METHOD(socket_t, sender, status_t,
 			struct in6_pktinfo *pktinfo;
 			struct sockaddr_in6 *sin;
 
+			memset(buf, 0, sizeof(buf));
 			msg.msg_control = buf;
 			msg.msg_controllen = sizeof(buf);
 			cmsg = CMSG_FIRSTHDR(&msg);
@@ -478,7 +479,6 @@ METHOD(socket_t, sender, status_t,
 			cmsg->cmsg_type = IPV6_PKTINFO;
 			cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
 			pktinfo = (struct in6_pktinfo*)CMSG_DATA(cmsg);
-			memset(pktinfo, 0, sizeof(struct in6_pktinfo));
 			sin = (struct sockaddr_in6*)src->get_sockaddr(src);
 			memcpy(&pktinfo->ipi6_addr, &sin->sin6_addr, sizeof(struct in6_addr));
 		}
@@ -611,6 +611,24 @@ static int open_socket(private_socket_default_socket_t *this,
 			return -1;
 		}
 	}
+#ifdef SO_MARK
+	{	/* set optional MARK on socket (requires CAP_NET_ADMIN) */
+		char *fwmark;
+		mark_t mark;
+
+		fwmark = lib->settings->get_str(lib->settings,
+							"%s.plugins.socket-default.fwmark", NULL, lib->ns);
+		if (fwmark && mark_from_string(fwmark, &mark))
+		{
+			if (setsockopt(skt, SOL_SOCKET, SO_MARK, &mark.value,
+						   sizeof(mark.value)) < 0)
+			{
+				DBG1(DBG_NET, "unable to set SO_MARK on socket: %s",
+					 strerror(errno));
+			}
+		}
+	}
+#endif
 
 	if (!hydra->kernel_interface->bypass_socket(hydra->kernel_interface,
 												skt, family))
@@ -639,10 +657,10 @@ static bool use_family(int family)
 	{
 		case AF_INET:
 			return lib->settings->get_bool(lib->settings,
-					"%s.plugins.socket-default.use_ipv4", TRUE, charon->name);
+						"%s.plugins.socket-default.use_ipv4", TRUE, lib->ns);
 		case AF_INET6:
 			return lib->settings->get_bool(lib->settings,
-					"%s.plugins.socket-default.use_ipv6", TRUE, charon->name);
+						"%s.plugins.socket-default.use_ipv6", TRUE, lib->ns);
 		default:
 			return FALSE;
 	}
@@ -717,14 +735,14 @@ socket_default_socket_t *socket_default_socket_create()
 			},
 		},
 		.port = lib->settings->get_int(lib->settings,
-							"%s.port", CHARON_UDP_PORT, charon->name),
+							"%s.port", CHARON_UDP_PORT, lib->ns),
 		.natt = lib->settings->get_int(lib->settings,
-							"%s.port_nat_t", CHARON_NATT_PORT, charon->name),
+							"%s.port_nat_t", CHARON_NATT_PORT, lib->ns),
 		.max_packet = lib->settings->get_int(lib->settings,
-							"%s.max_packet", MAX_PACKET, charon->name),
+							"%s.max_packet", MAX_PACKET, lib->ns),
 		.set_source = lib->settings->get_bool(lib->settings,
 							"%s.plugins.socket-default.set_source", TRUE,
-							charon->name),
+							lib->ns),
 	);
 
 	if (this->port && this->port == this->natt)

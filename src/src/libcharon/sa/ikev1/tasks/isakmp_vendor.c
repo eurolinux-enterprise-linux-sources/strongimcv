@@ -191,9 +191,9 @@ static void build(private_isakmp_vendor_t *this, message_t *message)
 	int i;
 
 	strongswan = lib->settings->get_bool(lib->settings,
-								"%s.send_vendor_id", FALSE, charon->name);
+										 "%s.send_vendor_id", FALSE, lib->ns);
 	cisco_unity = lib->settings->get_bool(lib->settings,
-								"%s.cisco_unity", FALSE, charon->name);
+										 "%s.cisco_unity", FALSE, lib->ns);
 	ike_cfg = this->ike_sa->get_ike_cfg(this->ike_sa);
 	fragmentation = ike_cfg->fragmentation(ike_cfg) != FRAGMENTATION_NO;
 	if (!this->initiator && fragmentation)
@@ -209,7 +209,7 @@ static void build(private_isakmp_vendor_t *this, message_t *message)
 		   (vendor_ids[i].extension == EXT_IKE_FRAGMENTATION && fragmentation))
 		{
 			DBG2(DBG_IKE, "sending %s vendor ID", vendor_ids[i].desc);
-			vid_payload = vendor_id_payload_create_data(VENDOR_ID_V1,
+			vid_payload = vendor_id_payload_create_data(PLV1_VENDOR_ID,
 				chunk_clone(chunk_create(vendor_ids[i].id, vendor_ids[i].len)));
 			message->add_payload(message, &vid_payload->payload_interface);
 		}
@@ -220,7 +220,7 @@ static void build(private_isakmp_vendor_t *this, message_t *message)
 			this->best_natt_ext == i)
 		{
 			DBG2(DBG_IKE, "sending %s vendor ID", vendor_natt_ids[i].desc);
-			vid_payload = vendor_id_payload_create_data(VENDOR_ID_V1,
+			vid_payload = vendor_id_payload_create_data(PLV1_VENDOR_ID,
 							chunk_clone(chunk_create(vendor_natt_ids[i].id,
 													 vendor_natt_ids[i].len)));
 			message->add_payload(message, &vid_payload->payload_interface);
@@ -240,7 +240,7 @@ static void process(private_isakmp_vendor_t *this, message_t *message)
 	enumerator = message->create_payload_enumerator(message);
 	while (enumerator->enumerate(enumerator, &payload))
 	{
-		if (payload->get_type(payload) == VENDOR_ID_V1)
+		if (payload->get_type(payload) == PLV1_VENDOR_ID)
 		{
 			vendor_id_payload_t *vid;
 			bool found = FALSE;

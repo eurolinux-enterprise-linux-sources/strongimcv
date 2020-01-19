@@ -6,7 +6,7 @@ AM_CPPFLAGS = \
 	-DPLUGINS=\""${attest_plugins}\""
 
 AM_CFLAGS = \
-	-rdynamic
+	$(PLUGIN_CFLAGS)
 
 imcv_LTLIBRARIES = imv-attestation.la
 
@@ -21,7 +21,7 @@ imv_attestation_la_SOURCES = imv_attestation.c \
 	imv_attestation_process.h imv_attestation_process.c \
 	imv_attestation_build.h imv_attestation_build.c
 
-imv_attestation_la_LDFLAGS = -module -avoid-version
+imv_attestation_la_LDFLAGS = -module -avoid-version -no-undefined
 
 ipsec_PROGRAMS = attest
 attest_SOURCES = attest.c \

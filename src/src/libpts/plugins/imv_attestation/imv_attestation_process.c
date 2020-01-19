@@ -1,5 +1,6 @@
 /*
- * Copyright (C) 2011-2013 Sansar Choinyambuu, Andreas Steffen
+ * Copyright (C) 2011-2012 Sansar Choinyambuu
+ * Copyright (C) 2011-2014 Andreas Steffen
  * HSR Hochschule fuer Technik Rapperswil
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -13,6 +14,9 @@
  * for more details.
  */
 
+#define _GNU_SOURCE /* for stdndup() */
+#include <string.h>
+
 #include "imv_attestation_process.h"
 
 #include <imcv.h>
@@ -20,15 +24,15 @@
 
 #include <pts/pts.h>
 
-#include <tcg/tcg_pts_attr_aik.h>
-#include <tcg/tcg_pts_attr_dh_nonce_params_resp.h>
-#include <tcg/tcg_pts_attr_file_meas.h>
-#include <tcg/tcg_pts_attr_meas_algo.h>
-#include <tcg/tcg_pts_attr_proto_caps.h>
-#include <tcg/tcg_pts_attr_simple_comp_evid.h>
-#include <tcg/tcg_pts_attr_simple_evid_final.h>
-#include <tcg/tcg_pts_attr_tpm_version_info.h>
-#include <tcg/tcg_pts_attr_unix_file_meta.h>
+#include <tcg/pts/tcg_pts_attr_aik.h>
+#include <tcg/pts/tcg_pts_attr_dh_nonce_params_resp.h>
+#include <tcg/pts/tcg_pts_attr_file_meas.h>
+#include <tcg/pts/tcg_pts_attr_meas_algo.h>
+#include <tcg/pts/tcg_pts_attr_proto_caps.h>
+#include <tcg/pts/tcg_pts_attr_simple_comp_evid.h>
+#include <tcg/pts/tcg_pts_attr_simple_evid_final.h>
+#include <tcg/pts/tcg_pts_attr_tpm_version_info.h>
+#include <tcg/pts/tcg_pts_attr_unix_file_meta.h>
 
 #include <utils/debug.h>
 #include <crypto/hashers/hasher.h>
@@ -42,10 +46,12 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 							 pts_database_t *pts_db,
 							 credential_manager_t *pts_credmgr)
 {
+	imv_session_t *session;
 	imv_attestation_state_t *attestation_state;
 	pen_type_t attr_type;
 	pts_t *pts;
 
+	session = state->get_session(state);
 	attestation_state = (imv_attestation_state_t*)state;
 	pts = attestation_state->get_pts(attestation_state);
 	attr_type = attr->get_type(attr);
@@ -76,7 +82,7 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 				return FALSE;
 			}
 			pts->set_meas_algorithm(pts, selected_algorithm);
-			state->set_action_flags(state, IMV_ATTESTATION_FLAG_ALGO);
+			state->set_action_flags(state, IMV_ATTESTATION_ALGO);
 			break;
 		}
 		case TCG_PTS_DH_NONCE_PARAMS_RESP:
@@ -92,7 +98,7 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 
 			/* check compliance of responder nonce length */
 			min_nonce_len = lib->settings->get_int(lib->settings,
-						"libimcv.plugins.imv-attestation.min_nonce_len", 0);
+						"%s.plugins.imv-attestation.min_nonce_len", 0, lib->ns);
 			nonce_len = responder_nonce.len;
 			if (nonce_len < PTS_MIN_NONCE_LEN ||
 			   (min_nonce_len > 0 && nonce_len < min_nonce_len))
@@ -136,6 +142,7 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 			{
 				return FALSE;
 			}
+			state->set_action_flags(state, IMV_ATTESTATION_DH_NONCE);
 			break;
 		}
 		case TCG_PTS_TPM_VERSION_INFO:
@@ -153,23 +160,41 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 			tcg_pts_attr_aik_t *attr_cast;
 			certificate_t *aik, *issuer;
 			public_key_t *public;
-			chunk_t keyid;
+			chunk_t keyid, keyid_hex, device_id;
+			int aik_id;
 			enumerator_t *e;
-			bool trusted = FALSE;
+			bool trusted = FALSE, trusted_chain = FALSE;
 
 			attr_cast = (tcg_pts_attr_aik_t*)attr;
 			aik = attr_cast->get_aik(attr_cast);
 			if (!aik)
 			{
 				DBG1(DBG_IMV, "AIK unavailable");
-				return FALSE;
+				attestation_state->set_measurement_error(attestation_state,
+									IMV_ATTESTATION_ERROR_NO_TRUSTED_AIK);
+				break;
 			}
+
+			/* check trust into public key as stored in the database */
+			public = aik->get_public_key(aik);
+			public->get_fingerprint(public, KEYID_PUBKEY_INFO_SHA1, &keyid);
+			DBG1(DBG_IMV, "verifying AIK with keyid %#B", &keyid);
+			keyid_hex = chunk_to_hex(keyid, NULL, FALSE);
+			if (session->get_device_id(session, &device_id) &&
+				chunk_equals(keyid_hex, device_id))
+			{
+				trusted = session->get_device_trust(session);
+			}
+			else
+			{
+				DBG1(DBG_IMV, "device ID unknown or different from AIK keyid");
+			}
+			DBG1(DBG_IMV, "AIK public key is %strusted", trusted ? "" : "not ");
+			public->destroy(public);
+			chunk_free(&keyid_hex);
+
 			if (aik->get_type(aik) == CERT_X509)
 			{
-				public = aik->get_public_key(aik);
-				public->get_fingerprint(public, KEYID_PUBKEY_INFO_SHA1, &keyid);
-				DBG1(DBG_IMV, "verifying AIK certificate with keyid %#B", &keyid);
-				public->destroy(public);
 
 				e = pts_credmgr->create_trusted_enumerator(pts_credmgr,
 							KEY_ANY, aik->get_issuer(aik), FALSE);
@@ -177,19 +202,22 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 				{
 					if (aik->issued_by(aik, issuer, NULL))
 					{
-						trusted = TRUE;
+						trusted_chain = TRUE;
 						break;
 					}
 				}
 				e->destroy(e);
 				DBG1(DBG_IMV, "AIK certificate is %strusted",
-							   trusted ? "" : "not ");
-				if (!trusted)
+							   trusted_chain ? "" : "not ");
+				if (!trusted || !trusted_chain)
 				{
-					return FALSE;
+					attestation_state->set_measurement_error(attestation_state,
+										IMV_ATTESTATION_ERROR_NO_TRUSTED_AIK);
+					break;
 				}
 			}
-			pts->set_aik(pts, aik);
+			session->get_session_id(session, NULL, &aik_id);
+			pts->set_aik(pts, aik, aik_id);
 			break;
 		}
 		case TCG_PTS_FILE_MEAS:
@@ -197,21 +225,18 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 			TNC_IMV_Evaluation_Result eval;
 			TNC_IMV_Action_Recommendation rec;
 			tcg_pts_attr_file_meas_t *attr_cast;
-			u_int16_t request_id;
+			uint16_t request_id;
 			int arg_int, file_count;
 			pts_meas_algorithms_t algo;
 			pts_file_meas_t *measurements;
-			imv_session_t *session;
 			imv_workitem_t *workitem, *found = NULL;
 			imv_workitem_type_t type;
-			char result_str[BUF_LEN], *platform_info;
+			char result_str[BUF_LEN];
 			bool is_dir, correct;
 			enumerator_t *enumerator;
 
 			eval = TNC_IMV_EVALUATION_RESULT_COMPLIANT;
-			session = state->get_session(state);
 			algo = pts->get_meas_algorithm(pts);
-			platform_info = pts->get_platform_info(pts);
 			attr_cast = (tcg_pts_attr_file_meas_t*)attr;
 			measurements = attr_cast->get_measurements(attr_cast);
 			request_id = measurements->get_request_id(measurements);
@@ -242,7 +267,7 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 				}
 				type =    found->get_type(found);
 				arg_int = found->get_arg_int(found);
- 
+
 				switch (type)
 				{
 					default:
@@ -264,7 +289,8 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 
 						/* check hashes from database against measurements */
 						e = pts_db->create_file_hash_enumerator(pts_db,
-										platform_info, algo, is_dir, arg_int);
+											pts->get_platform_id(pts), 
+											algo, is_dir, arg_int);
 						if (!e)
 						{
 							eval = TNC_IMV_EVALUATION_RESULT_ERROR;
@@ -295,9 +321,9 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 						e = measurements->create_enumerator(measurements);
 						while (e->enumerate(e, &filename, &measurement))
 						{
-							if (pts_db->add_file_measurement(pts_db, 
-									platform_info, algo, measurement, filename,
-									is_dir, arg_int) != SUCCESS)
+							if (pts_db->add_file_measurement(pts_db,
+									pts->get_platform_id(pts), algo, measurement,
+									filename, is_dir, arg_int) != SUCCESS)
 							{
 								eval = TNC_IMV_EVALUATION_RESULT_ERROR;
 							}
@@ -320,7 +346,8 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 			}
 			else
 			{
-				measurements->check(measurements, pts_db, platform_info, algo);
+				measurements->check(measurements, pts_db,
+									pts->get_platform_id(pts), algo);
 			}
 			break;
 		}
@@ -365,7 +392,8 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 			pts_comp_func_name_t *name;
 			pts_comp_evidence_t *evidence;
 			pts_component_t *comp;
-			u_int32_t depth;
+			uint32_t depth;
+			status_t status;
 
 			attr_cast = (tcg_pts_attr_simple_comp_evid_t*)attr;
 			evidence = attr_cast->get_comp_evidence(attr_cast);
@@ -377,8 +405,8 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 				DBG1(DBG_IMV, "  no entry found for component evidence request");
 				break;
 			}
-			if (comp->verify(comp, name->get_qualifier(name), pts,
-							 evidence) != SUCCESS)
+			status = comp->verify(comp, name->get_qualifier(name), pts, evidence);
+			if (status == VERIFY_ERROR || status == FAILED)
 			{
 				attestation_state->set_measurement_error(attestation_state,
 									IMV_ATTESTATION_ERROR_COMP_EVID_FAIL);
@@ -389,11 +417,15 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 		case TCG_PTS_SIMPLE_EVID_FINAL:
 		{
 			tcg_pts_attr_simple_evid_final_t *attr_cast;
-			u_int8_t flags;
+			uint8_t flags;
 			pts_meas_algorithms_t comp_hash_algorithm;
 			chunk_t pcr_comp, tpm_quote_sig, evid_sig;
-			chunk_t pcr_composite, quote_info;
+			chunk_t pcr_composite, quote_info, result_buf;
+			imv_workitem_t *workitem;
+			imv_reason_string_t *reason_string;
+			enumerator_t *enumerator;
 			bool use_quote2, use_ver_info;
+			bio_writer_t *result;
 
 			attr_cast = (tcg_pts_attr_simple_evid_final_t*)attr;
 			flags = attr_cast->get_quote_info(attr_cast, &comp_hash_algorithm,
@@ -419,28 +451,74 @@ bool imv_attestation_process(pa_tnc_attr_t *attr, imv_msg_t *out_msg,
 								  "constructed one");
 					attestation_state->set_measurement_error(attestation_state,
 										IMV_ATTESTATION_ERROR_TPM_QUOTE_FAIL);
-					free(pcr_composite.ptr);
-					free(quote_info.ptr);
-					break;
+					goto quote_error;
 				}
 				DBG2(DBG_IMV, "received PCR Composite matches constructed one");
-				free(pcr_composite.ptr);
 
 				if (!pts->verify_quote_signature(pts, quote_info, tpm_quote_sig))
 				{
 					attestation_state->set_measurement_error(attestation_state,
 										IMV_ATTESTATION_ERROR_TPM_QUOTE_FAIL);
-					free(quote_info.ptr);
-					break;
+					goto quote_error;
 				}
 				DBG2(DBG_IMV, "TPM Quote Info signature verification successful");
+
+quote_error:
+				free(pcr_composite.ptr);
 				free(quote_info.ptr);
 
 				/**
 				 * Finalize any pending measurement registrations and check
 				 * if all expected component measurements were received
 				 */
-				attestation_state->finalize_components(attestation_state);
+				result = bio_writer_create(128);
+				attestation_state->finalize_components(attestation_state,
+													   result);
+
+				enumerator = session->create_workitem_enumerator(session);
+				while (enumerator->enumerate(enumerator, &workitem))
+				{
+					if (workitem->get_type(workitem) == IMV_WORKITEM_TPM_ATTEST)
+					{
+						TNC_IMV_Action_Recommendation rec;
+						TNC_IMV_Evaluation_Result eval;
+						uint32_t error;
+
+						error = attestation_state->get_measurement_error(
+														attestation_state);
+						if (error & (IMV_ATTESTATION_ERROR_COMP_EVID_FAIL |
+									 IMV_ATTESTATION_ERROR_COMP_EVID_PEND |
+									 IMV_ATTESTATION_ERROR_TPM_QUOTE_FAIL))
+						{
+							reason_string = imv_reason_string_create("en", ", ");
+							attestation_state->add_comp_evid_reasons(
+											attestation_state, reason_string);
+							result->write_data(result, chunk_from_str("; "));
+							result->write_data(result,
+									reason_string->get_encoding(reason_string));
+							reason_string->destroy(reason_string);
+							eval = TNC_IMV_EVALUATION_RESULT_NONCOMPLIANT_MINOR;
+						}
+						else
+						{
+							eval = TNC_IMV_EVALUATION_RESULT_COMPLIANT;
+						}
+						session->remove_workitem(session, enumerator);
+
+						result->write_uint8(result, '\0');
+						result_buf = result->get_buf(result);
+						rec = workitem->set_result(workitem, result_buf.ptr,
+															 eval);
+						state->update_recommendation(state, rec, eval);
+						imcv_db->finalize_workitem(imcv_db, workitem);
+						workitem->destroy(workitem);
+						attestation_state->set_handshake_state(attestation_state,
+													IMV_ATTESTATION_STATE_END);
+						break;
+					}
+				}
+				enumerator->destroy(enumerator);
+				result->destroy(result);
 			}
 
 			if (attr_cast->get_evid_sig(attr_cast, &evid_sig))

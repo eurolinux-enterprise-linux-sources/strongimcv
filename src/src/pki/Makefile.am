@@ -1,4 +1,6 @@
-ipsec_PROGRAMS = pki
+SUBDIRS = man
+
+bin_PROGRAMS = pki
 
 pki_SOURCES = pki.c pki.h command.c command.h \
 	commands/gen.c \
@@ -9,6 +11,7 @@ pki_SOURCES = pki.c pki.h command.c command.h \
 	commands/self.c \
 	commands/print.c \
 	commands/signcrl.c \
+	commands/acert.c \
 	commands/pkcs7.c \
 	commands/verify.c
 

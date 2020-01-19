@@ -120,6 +120,11 @@ struct private_child_sa_t {
 	time_t expire_time;
 
 	/**
+	 * absolute time when SA has been installed
+	 */
+	time_t install_time;
+
+	/**
 	 * state of the CHILD_SA
 	 */
 	child_sa_state_t state;
@@ -167,12 +172,12 @@ struct private_child_sa_t {
 	/**
 	 * time of last use in seconds (inbound)
 	 */
-	u_int32_t my_usetime;
+	time_t my_usetime;
 
 	/**
 	 * time of last use in seconds (outbound)
 	 */
-	u_int32_t other_usetime;
+	time_t other_usetime;
 
 	/**
 	 * last number of inbound bytes
@@ -429,7 +434,7 @@ static status_t update_usebytes(private_child_sa_t *this, bool inbound)
 {
 	status_t status = FAILED;
 	u_int64_t bytes, packets;
-	u_int32_t time;
+	time_t time;
 
 	if (inbound)
 	{
@@ -489,12 +494,12 @@ static bool update_usetime(private_child_sa_t *this, bool inbound)
 {
 	enumerator_t *enumerator;
 	traffic_selector_t *my_ts, *other_ts;
-	u_int32_t last_use = 0;
+	time_t last_use = 0;
 
 	enumerator = create_policy_enumerator(this);
 	while (enumerator->enumerate(enumerator, &my_ts, &other_ts))
 	{
-		u_int32_t in, out, fwd;
+		time_t in, out, fwd;
 
 		if (inbound)
 		{
@@ -586,6 +591,12 @@ METHOD(child_sa_t, get_lifetime, time_t,
 	return hard ? this->expire_time : this->rekey_time;
 }
 
+METHOD(child_sa_t, get_installtime, time_t,
+	private_child_sa_t *this)
+{
+	return this->install_time;
+}
+
 METHOD(child_sa_t, alloc_spi, u_int32_t,
 	   private_child_sa_t *this, protocol_id_t protocol)
 {
@@ -594,6 +605,9 @@ METHOD(child_sa_t, alloc_spi, u_int32_t,
 										 proto_ike2ip(protocol), this->reqid,
 										 &this->my_spi) == SUCCESS)
 	{
+		/* if we allocate a SPI, but then are unable to establish the SA, we
+		 * need to know the protocol family to delete the partial SA */
+		this->protocol = protocol;
 		return this->my_spi;
 	}
 	return 0;
@@ -708,12 +722,23 @@ METHOD(child_sa_t, install, status_t,
 				src, dst, spi, proto_ike2ip(this->protocol), this->reqid,
 				inbound ? this->mark_in : this->mark_out, tfc,
 				lifetime, enc_alg, encr, int_alg, integ, this->mode,
-				this->ipcomp, cpi, initiator, this->encap, esn, update,
-				src_ts, dst_ts);
+				this->ipcomp, cpi, this->config->get_replay_window(this->config),
+				initiator, this->encap, esn, update, src_ts, dst_ts);
 
 	free(lifetime);
 
 	return status;
+}
+
+/**
+ * Check kernel interface if policy updates are required
+ */
+static bool require_policy_update()
+{
+	kernel_feature_t f;
+
+	f = hydra->kernel_interface->get_features(hydra->kernel_interface);
+	return !(f & KERNEL_NO_POLICY_UPDATES);
 }
 
 /**
@@ -822,13 +847,21 @@ METHOD(child_sa_t, add_policies, status_t,
 		priority = this->trap ? POLICY_PRIORITY_ROUTED
 							  : POLICY_PRIORITY_DEFAULT;
 
+		enumerator = create_policy_enumerator(this);
+		while (enumerator->enumerate(enumerator, &my_ts, &other_ts))
+		{
+			my_sa.policy_count++;
+			other_sa.policy_count++;
+		}
+		enumerator->destroy(enumerator);
+
 		/* enumerate pairs of traffic selectors */
 		enumerator = create_policy_enumerator(this);
 		while (enumerator->enumerate(enumerator, &my_ts, &other_ts))
 		{
 			/* install outbound drop policy to avoid packets leaving unencrypted
 			 * when updating policies */
-			if (priority == POLICY_PRIORITY_DEFAULT)
+			if (priority == POLICY_PRIORITY_DEFAULT && require_policy_update())
 			{
 				status |= install_policies_internal(this, this->my_addr,
 									this->other_addr, my_ts, other_ts,
@@ -902,6 +935,7 @@ METHOD(child_sa_t, update, status_t,
 							this->other_addr, this->my_addr, other, me,
 							this->encap, encap, this->mark_in) == NOT_SUPPORTED)
 			{
+				set_state(this, old);
 				return NOT_SUPPORTED;
 			}
 		}
@@ -915,12 +949,13 @@ METHOD(child_sa_t, update, status_t,
 							this->my_addr, this->other_addr, me, other,
 							this->encap, encap, this->mark_out) == NOT_SUPPORTED)
 			{
+				set_state(this, old);
 				return NOT_SUPPORTED;
 			}
 		}
 	}
 
-	if (this->config->install_policy(this->config))
+	if (this->config->install_policy(this->config) && require_policy_update())
 	{
 		ipsec_sa_cfg_t my_sa = {
 			.mode = this->mode,
@@ -1039,12 +1074,6 @@ METHOD(child_sa_t, destroy, void,
 	/* delete SAs in the kernel, if they are set up */
 	if (this->my_spi)
 	{
-		/* if CHILD was not established, use PROTO_ESP used during alloc_spi().
-		 * TODO: For AH support, we have to store protocol specific SPI.s */
-		if (this->protocol == PROTO_NONE)
-		{
-			this->protocol = PROTO_ESP;
-		}
 		hydra->kernel_interface->del_sa(hydra->kernel_interface,
 					this->other_addr, this->my_addr, this->my_spi,
 					proto_ike2ip(this->protocol), this->my_cpi,
@@ -1065,7 +1094,7 @@ METHOD(child_sa_t, destroy, void,
 		while (enumerator->enumerate(enumerator, &my_ts, &other_ts))
 		{
 			del_policies_internal(this, my_ts, other_ts, priority);
-			if (priority == POLICY_PRIORITY_DEFAULT)
+			if (priority == POLICY_PRIORITY_DEFAULT && require_policy_update())
 			{
 				del_policies_internal(this, my_ts, other_ts,
 									  POLICY_PRIORITY_FALLBACK);
@@ -1143,6 +1172,7 @@ child_sa_t * child_sa_create(host_t *me, host_t* other,
 			.get_proposal = _get_proposal,
 			.set_proposal = _set_proposal,
 			.get_lifetime = _get_lifetime,
+			.get_installtime = _get_installtime,
 			.get_usestats = _get_usestats,
 			.get_mark = _get_mark,
 			.has_encap = _has_encap,
@@ -1173,6 +1203,7 @@ child_sa_t * child_sa_create(host_t *me, host_t* other,
 		.reqid = config->get_reqid(config),
 		.mark_in = config->get_mark(config, TRUE),
 		.mark_out = config->get_mark(config, FALSE),
+		.install_time = time_monotonic(NULL),
 	);
 
 	this->config = config;

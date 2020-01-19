@@ -179,8 +179,9 @@ METHOD(kernel_interface_t, add_sa, status_t,
 	private_kernel_interface_t *this, host_t *src, host_t *dst,
 	u_int32_t spi, u_int8_t protocol, u_int32_t reqid, mark_t mark,
 	u_int32_t tfc, lifetime_cfg_t *lifetime, u_int16_t enc_alg, chunk_t enc_key,
-	u_int16_t int_alg, chunk_t int_key,	ipsec_mode_t mode, u_int16_t ipcomp,
-	u_int16_t cpi, bool initiator, bool encap, bool esn, bool inbound,
+	u_int16_t int_alg, chunk_t int_key, ipsec_mode_t mode,
+	u_int16_t ipcomp, u_int16_t cpi, u_int32_t replay_window,
+	bool initiator, bool encap, bool esn, bool inbound,
 	traffic_selector_t *src_ts, traffic_selector_t *dst_ts)
 {
 	if (!this->ipsec)
@@ -188,8 +189,9 @@ METHOD(kernel_interface_t, add_sa, status_t,
 		return NOT_SUPPORTED;
 	}
 	return this->ipsec->add_sa(this->ipsec, src, dst, spi, protocol, reqid,
-			mark, tfc, lifetime, enc_alg, enc_key, int_alg, int_key, mode,
-			ipcomp, cpi, initiator, encap, esn, inbound, src_ts, dst_ts);
+				mark, tfc, lifetime, enc_alg, enc_key, int_alg, int_key, mode,
+				ipcomp, cpi, replay_window, initiator, encap, esn, inbound,
+				src_ts, dst_ts);
 }
 
 METHOD(kernel_interface_t, update_sa, status_t,
@@ -208,7 +210,7 @@ METHOD(kernel_interface_t, update_sa, status_t,
 METHOD(kernel_interface_t, query_sa, status_t,
 	private_kernel_interface_t *this, host_t *src, host_t *dst,
 	u_int32_t spi, u_int8_t protocol, mark_t mark,
-	u_int64_t *bytes, u_int64_t *packets, u_int32_t *time)
+	u_int64_t *bytes, u_int64_t *packets, time_t *time)
 {
 	if (!this->ipsec)
 	{
@@ -256,7 +258,7 @@ METHOD(kernel_interface_t, add_policy, status_t,
 METHOD(kernel_interface_t, query_policy, status_t,
 	private_kernel_interface_t *this, traffic_selector_t *src_ts,
 	traffic_selector_t *dst_ts, policy_dir_t direction, mark_t mark,
-	u_int32_t *use_time)
+	time_t *use_time)
 {
 	if (!this->ipsec)
 	{
@@ -300,13 +302,13 @@ METHOD(kernel_interface_t, get_source_addr, host_t*,
 }
 
 METHOD(kernel_interface_t, get_nexthop, host_t*,
-	private_kernel_interface_t *this, host_t *dest, host_t *src)
+	private_kernel_interface_t *this, host_t *dest, int prefix, host_t *src)
 {
 	if (!this->net)
 	{
 		return NULL;
 	}
-	return this->net->get_nexthop(this->net, dest, src);
+	return this->net->get_nexthop(this->net, dest, prefix, src);
 }
 
 METHOD(kernel_interface_t, get_interface, bool,
@@ -447,7 +449,9 @@ METHOD(kernel_interface_t, get_address_by_ts, status_t,
 	}
 	host->destroy(host);
 
-	addrs = create_address_enumerator(this, ADDR_TYPE_VIRTUAL);
+	/* try virtual IPs only first (on all interfaces) */
+	addrs = create_address_enumerator(this,
+									  ADDR_TYPE_ALL ^ ADDR_TYPE_REGULAR);
 	while (addrs->enumerate(addrs, (void**)&host))
 	{
 		if (ts->includes(ts, host))
@@ -464,8 +468,9 @@ METHOD(kernel_interface_t, get_address_by_ts, status_t,
 	addrs->destroy(addrs);
 
 	if (!found)
-	{
-		addrs = create_address_enumerator(this, ADDR_TYPE_REGULAR);
+	{	/* then try the regular addresses (on all interfaces) */
+		addrs = create_address_enumerator(this,
+										  ADDR_TYPE_ALL ^ ADDR_TYPE_VIRTUAL);
 		while (addrs->enumerate(addrs, (void**)&host))
 		{
 			if (ts->includes(ts, host))
@@ -793,12 +798,12 @@ kernel_interface_t *kernel_interface_create()
 	);
 
 	ifaces = lib->settings->get_str(lib->settings,
-					"%s.interfaces_use", NULL, hydra->daemon);
+									"%s.interfaces_use", NULL, lib->ns);
 	if (!ifaces)
 	{
 		this->ifaces_exclude = TRUE;
 		ifaces = lib->settings->get_str(lib->settings,
-					"%s.interfaces_ignore", NULL, hydra->daemon);
+									"%s.interfaces_ignore", NULL, lib->ns);
 	}
 	if (ifaces)
 	{

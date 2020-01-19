@@ -11,13 +11,21 @@ kernel/kernel_ipsec.c kernel/kernel_ipsec.h \
 kernel/kernel_net.c kernel/kernel_net.h \
 kernel/kernel_listener.h
 
-libhydra_la_LIBADD =
+libhydra_la_LIBADD = \
+  $(top_builddir)/src/libstrongswan/libstrongswan.la
+
+if USE_WINDOWS
+  libhydra_la_LIBADD += -lws2_32
+endif
 
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/libstrongswan \
 	-DIPSEC_DIR=\"${ipsecdir}\" \
 	-DPLUGINDIR=\"${plugindir}\" \
 	-DSTRONGSWAN_CONF=\"${strongswan_conf}\"
+
+AM_LDFLAGS = \
+  -no-undefined
 
 EXTRA_DIST = Android.mk
 
@@ -55,13 +63,6 @@ if USE_KERNEL_PFROUTE
   SUBDIRS += plugins/kernel_pfroute
 if MONOLITHIC
   libhydra_la_LIBADD += plugins/kernel_pfroute/libstrongswan-kernel-pfroute.la
-endif
-endif
-
-if USE_KERNEL_KLIPS
-  SUBDIRS += plugins/kernel_klips
-if MONOLITHIC
-  libhydra_la_LIBADD += plugins/kernel_klips/libstrongswan-kernel-klips.la
 endif
 endif
 

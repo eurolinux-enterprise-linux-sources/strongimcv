@@ -43,6 +43,8 @@ CONFIG_OPTS = \
 	--enable-imv-os \
 	--enable-imc-attestation \
 	--enable-imv-attestation \
+	--enable-imc-swid \
+	--enable-imv-swid \
 	--enable-sql \
 	--enable-sqlite \
 	--enable-attr-sql \
@@ -73,10 +75,14 @@ CONFIG_OPTS = \
 	--enable-unity \
 	--enable-unbound \
 	--enable-ipseckey \
+	--enable-dnscert \
+	--enable-acert \
 	--enable-cmd \
 	--enable-libipsec \
 	--enable-kernel-libipsec \
-	--enable-tkm
+	--enable-tkm \
+	--enable-ntru \
+	--enable-lookip
 
 export ADA_PROJECT_PATH=/usr/local/ada/lib/gnat
 

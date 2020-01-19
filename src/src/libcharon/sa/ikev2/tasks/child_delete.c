@@ -17,6 +17,7 @@
 
 #include <daemon.h>
 #include <encoding/payloads/delete_payload.h>
+#include <sa/ikev2/tasks/child_create.h>
 
 
 typedef struct private_child_delete_t private_child_delete_t;
@@ -92,7 +93,7 @@ static void build_payloads(private_child_delete_t *this, message_t *message)
 			case PROTO_ESP:
 				if (esp == NULL)
 				{
-					esp = delete_payload_create(DELETE, PROTO_ESP);
+					esp = delete_payload_create(PLV2_DELETE, PROTO_ESP);
 					message->add_payload(message, (payload_t*)esp);
 				}
 				esp->add_spi(esp, spi);
@@ -102,7 +103,7 @@ static void build_payloads(private_child_delete_t *this, message_t *message)
 			case PROTO_AH:
 				if (ah == NULL)
 				{
-					ah = delete_payload_create(DELETE, PROTO_AH);
+					ah = delete_payload_create(PLV2_DELETE, PROTO_AH);
 					message->add_payload(message, (payload_t*)ah);
 				}
 				ah->add_spi(ah, spi);
@@ -132,7 +133,7 @@ static void process_payloads(private_child_delete_t *this, message_t *message)
 	payloads = message->create_payload_enumerator(message);
 	while (payloads->enumerate(payloads, &payload))
 	{
-		if (payload->get_type(payload) == DELETE)
+		if (payload->get_type(payload) == PLV2_DELETE)
 		{
 			delete_payload = (delete_payload_t*)payload;
 			protocol = delete_payload->get_protocol_id(delete_payload);
@@ -198,7 +199,7 @@ static status_t destroy_and_reestablish(private_child_delete_t *this)
 	child_sa_t *child_sa;
 	child_cfg_t *child_cfg;
 	protocol_id_t protocol;
-	u_int32_t spi;
+	u_int32_t spi, reqid;
 	action_t action;
 	status_t status = SUCCESS;
 
@@ -211,6 +212,7 @@ static status_t destroy_and_reestablish(private_child_delete_t *this)
 			charon->bus->child_updown(charon->bus, child_sa, FALSE);
 		}
 		spi = child_sa->get_spi(child_sa, TRUE);
+		reqid = child_sa->get_reqid(child_sa);
 		protocol = child_sa->get_protocol(child_sa);
 		child_cfg = child_sa->get_config(child_sa);
 		child_cfg->get_ref(child_cfg);
@@ -223,12 +225,12 @@ static status_t destroy_and_reestablish(private_child_delete_t *this)
 				case ACTION_RESTART:
 					child_cfg->get_ref(child_cfg);
 					status = this->ike_sa->initiate(this->ike_sa, child_cfg,
-									child_sa->get_reqid(child_sa), NULL, NULL);
+													reqid, NULL, NULL);
 					break;
 				case ACTION_ROUTE:
 					charon->traps->install(charon->traps,
 							this->ike_sa->get_peer_cfg(this->ike_sa), child_cfg,
-							child_sa->get_reqid(child_sa));
+							reqid);
 					break;
 				default:
 					break;
@@ -312,6 +314,17 @@ METHOD(task_t, build_i, status_t,
 	}
 	log_children(this);
 	build_payloads(this, message);
+
+	if (!this->rekeyed && this->expired)
+	{
+		child_cfg_t *child_cfg;
+
+		DBG1(DBG_IKE, "scheduling CHILD_SA recreate after hard expire");
+		child_cfg = child_sa->get_config(child_sa);
+		this->ike_sa->queue_task(this->ike_sa, (task_t*)
+				child_create_create(this->ike_sa, child_cfg->get_ref(child_cfg),
+									FALSE, NULL, NULL));
+	}
 	return NEED_MORE;
 }
 

@@ -1,7 +1,7 @@
-diff -urNp strongswan-5.1.0-patched/src/libstrongswan/plugins/plugin_loader.c strongswan-5.1.0-current/src/libstrongswan/plugins/plugin_loader.c
---- strongswan-5.1.0-patched/src/libstrongswan/plugins/plugin_loader.c	2013-08-06 17:16:36.266031511 -0400
-+++ strongswan-5.1.0-current/src/libstrongswan/plugins/plugin_loader.c	2013-08-06 17:49:15.703354848 -0400
-@@ -353,7 +353,7 @@ static plugin_entry_t *load_plugin(priva
+diff -urNp strongswan-5.2.0-patched/src/libstrongswan/plugins/plugin_loader.c strongswan-5.2.0-current/src/libstrongswan/plugins/plugin_loader.c
+--- strongswan-5.2.0-patched/src/libstrongswan/plugins/plugin_loader.c	2014-07-18 15:24:06.260406537 -0400
++++ strongswan-5.2.0-current/src/libstrongswan/plugins/plugin_loader.c	2014-07-18 15:30:28.672243729 -0400
+@@ -356,7 +356,7 @@ static plugin_entry_t *load_plugin(priva
  			return NULL;
  		}
  	}

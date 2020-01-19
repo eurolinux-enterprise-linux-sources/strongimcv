@@ -1,0 +1,26 @@
+diff --git a/src/libimcv/Makefile.am b/src/libimcv/Makefile.am
+index 4bed3bf..3c5a3c5 100644
+--- a/src/libimcv/Makefile.am
++++ b/src/libimcv/Makefile.am
+@@ -1,6 +1,7 @@
+ AM_CPPFLAGS = \
+ 	-I$(top_srcdir)/src/libstrongswan \
+-	-I$(top_srcdir)/src/libtncif
++	-I$(top_srcdir)/src/libtncif \
++	-DIPSEC_SCRIPT=\"${ipsec_script}\"
+ 
+ ipseclib_LTLIBRARIES = libimcv.la
+ 
+diff --git a/src/libimcv/imcv.c b/src/libimcv/imcv.c
+index 30679a3..565e861 100644
+--- a/src/libimcv/imcv.c
++++ b/src/libimcv/imcv.c
+@@ -25,7 +25,7 @@
+ #endif
+ 
+ #define IMCV_DEBUG_LEVEL			1
+-#define IMCV_DEFAULT_POLICY_SCRIPT	"ipsec _imv_policy"
++#define IMCV_DEFAULT_POLICY_SCRIPT	IPSEC_SCRIPT" _imv_policy"
+ 
+ 
+ /**

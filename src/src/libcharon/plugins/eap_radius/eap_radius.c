@@ -21,6 +21,7 @@
 
 #include <radius_message.h>
 #include <radius_client.h>
+#include <bio/bio_writer.h>
 
 #include <daemon.h>
 
@@ -187,7 +188,7 @@ void eap_radius_build_attributes(radius_message_t *request)
 		}
 		if (lib->settings->get_bool(lib->settings,
 									"%s.plugins.eap-radius.station_id_with_port",
-									TRUE, charon->name))
+									TRUE, lib->ns))
 		{
 			station_id_fmt = "%#H";
 		}
@@ -392,6 +393,85 @@ static void process_timeout(radius_message_t *msg)
 }
 
 /**
+ * Add a Cisco Unity configuration attribute
+ */
+static void add_unity_attribute(eap_radius_provider_t *provider, u_int32_t id,
+								int type, chunk_t data)
+{
+	switch (type)
+	{
+		case 15: /* CVPN3000-IPSec-Banner1 */
+		case 36: /* CVPN3000-IPSec-Banner2 */
+			provider->add_attribute(provider, id, UNITY_BANNER, data);
+			break;
+		case 28: /* CVPN3000-IPSec-Default-Domain */
+			provider->add_attribute(provider, id, UNITY_DEF_DOMAIN, data);
+			break;
+		case 29: /* CVPN3000-IPSec-Split-DNS-Names */
+			provider->add_attribute(provider, id, UNITY_SPLITDNS_NAME, data);
+			break;
+	}
+}
+
+/**
+ * Add a UNITY_LOCAL_LAN or UNITY_SPLIT_INCLUDE attribute
+ */
+static void add_unity_split_attribute(eap_radius_provider_t *provider,
+							u_int32_t id, configuration_attribute_type_t type,
+							chunk_t data)
+{
+	enumerator_t *enumerator;
+	bio_writer_t *writer;
+	char buffer[256], *token, *slash;
+
+	if (snprintf(buffer, sizeof(buffer), "%.*s", (int)data.len,
+				 data.ptr) >= sizeof(buffer))
+	{
+		return;
+	}
+	writer = bio_writer_create(16); /* two IPv4 addresses and 6 bytes padding */
+	enumerator = enumerator_create_token(buffer, ",", " ");
+	while (enumerator->enumerate(enumerator, &token))
+	{
+		host_t *net, *mask = NULL;
+		chunk_t padding;
+
+		slash = strchr(token, '/');
+		if (slash)
+		{
+			*slash++ = '\0';
+			mask = host_create_from_string(slash, 0);
+		}
+		if (!mask)
+		{	/* default to /32 */
+			mask = host_create_from_string("255.255.255.255", 0);
+		}
+		net = host_create_from_string(token, 0);
+		if (!net || net->get_family(net) != AF_INET ||
+			 mask->get_family(mask) != AF_INET)
+		{
+			mask->destroy(mask);
+			DESTROY_IF(net);
+			continue;
+		}
+		writer->write_data(writer, net->get_address(net));
+		writer->write_data(writer, mask->get_address(mask));
+		padding = writer->skip(writer, 6); /* 6 bytes pdding */
+		memset(padding.ptr, 0, padding.len);
+		mask->destroy(mask);
+		net->destroy(net);
+	}
+	enumerator->destroy(enumerator);
+
+	data = writer->get_buf(writer);
+	if (data.len)
+	{
+		provider->add_attribute(provider, id, type, data);
+	}
+	writer->destroy(writer);
+}
+
+/**
  * Handle Framed-IP-Address and other IKE configuration attributes
  */
 static void process_cfg_attributes(radius_message_t *msg)
@@ -401,6 +481,7 @@ static void process_cfg_attributes(radius_message_t *msg)
 	ike_sa_t *ike_sa;
 	host_t *host;
 	chunk_t data;
+	configuration_attribute_type_t split_type = 0;
 	int type, vendor;
 
 	ike_sa = charon->bus->get_sa(charon->bus);
@@ -419,6 +500,11 @@ static void process_cfg_attributes(radius_message_t *msg)
 									ike_sa->get_unique_id(ike_sa), host);
 				}
 			}
+			else if (type == RAT_FRAMED_IP_NETMASK && data.len == 4)
+			{
+				provider->add_attribute(provider, ike_sa->get_unique_id(ike_sa),
+										INTERNAL_IP4_NETMASK, data);
+			}
 		}
 		enumerator->destroy(enumerator);
 
@@ -430,12 +516,30 @@ static void process_cfg_attributes(radius_message_t *msg)
 				switch (type)
 				{
 					case 15: /* CVPN3000-IPSec-Banner1 */
+					case 28: /* CVPN3000-IPSec-Default-Domain */
+					case 29: /* CVPN3000-IPSec-Split-DNS-Names */
 					case 36: /* CVPN3000-IPSec-Banner2 */
 						if (ike_sa->supports_extension(ike_sa, EXT_CISCO_UNITY))
 						{
-							provider->add_attribute(provider,
-												ike_sa->get_unique_id(ike_sa),
-												UNITY_BANNER, data);
+							add_unity_attribute(provider,
+									ike_sa->get_unique_id(ike_sa), type, data);
+						}
+						break;
+					case 55: /* CVPN3000-IPSec-Split-Tunneling-Policy */
+						if (data.len)
+						{
+							switch (data.ptr[data.len - 1])
+							{
+								case 0: /* tunnelall */
+								default:
+									break;
+								case 1: /* tunnelspecified */
+									split_type = UNITY_SPLIT_INCLUDE;
+									break;
+								case 2: /* excludespecified */
+									split_type = UNITY_LOCAL_LAN;
+									break;
+							}
 						}
 						break;
 					default:
@@ -444,6 +548,22 @@ static void process_cfg_attributes(radius_message_t *msg)
 			}
 		}
 		enumerator->destroy(enumerator);
+
+		if (split_type != 0 &&
+			ike_sa->supports_extension(ike_sa, EXT_CISCO_UNITY))
+		{
+			enumerator = msg->create_vendor_enumerator(msg);
+			while (enumerator->enumerate(enumerator, &vendor, &type, &data))
+			{
+				if (vendor == PEN_ALTIGA /* aka Cisco VPN3000 */ &&
+					type == 27 /* CVPN3000-IPSec-Split-Tunnel-List */)
+				{
+					add_unity_split_attribute(provider,
+							ike_sa->get_unique_id(ike_sa), split_type, data);
+				}
+			}
+			enumerator->destroy(enumerator);
+		}
 	}
 }
 
@@ -453,12 +573,12 @@ static void process_cfg_attributes(radius_message_t *msg)
 void eap_radius_process_attributes(radius_message_t *message)
 {
 	if (lib->settings->get_bool(lib->settings,
-					"%s.plugins.eap-radius.class_group", FALSE, charon->name))
+						"%s.plugins.eap-radius.class_group", FALSE, lib->ns))
 	{
 		process_class(message);
 	}
 	if (lib->settings->get_bool(lib->settings,
-					"%s.plugins.eap-radius.filter_id", FALSE, charon->name))
+						"%s.plugins.eap-radius.filter_id", FALSE, lib->ns))
 	{
 		process_filter_id(message);
 	}
@@ -600,10 +720,10 @@ eap_radius_t *eap_radius_create(identification_t *server, identification_t *peer
 		.type = EAP_RADIUS,
 		.eap_start = lib->settings->get_bool(lib->settings,
 									"%s.plugins.eap-radius.eap_start", FALSE,
-									charon->name),
+									lib->ns),
 		.id_prefix = lib->settings->get_str(lib->settings,
 									"%s.plugins.eap-radius.id_prefix", "",
-									charon->name),
+									lib->ns),
 	);
 	this->client = eap_radius_create_client();
 	if (!this->client)

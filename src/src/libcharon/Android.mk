@@ -7,7 +7,6 @@ bus/bus.c bus/bus.h \
 bus/listeners/listener.h \
 bus/listeners/logger.h \
 bus/listeners/file_logger.c bus/listeners/file_logger.h \
-bus/listeners/sys_logger.c bus/listeners/sys_logger.h \
 config/backend_manager.c config/backend_manager.h config/backend.h \
 config/child_cfg.c config/child_cfg.h \
 config/ike_cfg.c config/ike_cfg.h \
@@ -123,6 +122,9 @@ sa/ikev1/tasks/mode_config.c sa/ikev1/tasks/mode_config.h \
 processing/jobs/dpd_timeout_job.c processing/jobs/dpd_timeout_job.h \
 processing/jobs/adopt_children_job.c processing/jobs/adopt_children_job.h
 
+libcharon_la_SOURCES += \
+    bus/listeners/sys_logger.c bus/listeners/sys_logger.h
+
 LOCAL_SRC_FILES := $(filter %.c,$(libcharon_la_SOURCES))
 
 # adding the plugin source files
@@ -187,6 +189,10 @@ endif
 LOCAL_SRC_FILES += $(call add_plugin, eap-peap)
 
 LOCAL_SRC_FILES += $(call add_plugin, eap-tnc)
+ifneq ($(call plugin_enabled, eap-tnc),)
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../libtnccs/ $(LOCAL_PATH)/../libtncif/
+LOCAL_SHARED_LIBRARIES += libtnccs libtncif
+endif
 
 # adding libtls if any of the four plugins above is enabled
 ifneq ($(or $(call plugin_enabled, eap-tls), $(call plugin_enabled, eap-ttls), \
@@ -195,6 +201,7 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH)/../libtls/
 LOCAL_SRC_FILES += $(addprefix ../libtls/, \
 		tls_protection.c tls_compression.c tls_fragmentation.c tls_alert.c \
 		tls_crypto.c tls_prf.c tls_socket.c tls_eap.c tls_cache.c tls_peer.c \
+		tls_aead_expl.c tls_aead_impl.c tls_aead_null.c tls_aead.c \
 		tls_server.c tls.c \
 	)
 endif
@@ -210,41 +217,12 @@ ifneq ($(call plugin_enabled, stroke),)
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/../stroke/
 endif
 
-LOCAL_SRC_FILES += $(call add_plugin, tnc-imc)
-ifneq ($(call plugin_enabled, tnc-imc),)
-LOCAL_SHARED_LIBRARIES += libdl
-endif
-
-LOCAL_SRC_FILES += $(call add_plugin, tnc-tnccs)
-
-LOCAL_SRC_FILES += $(call add_plugin, tnccs-20)
-LOCAL_SRC_FILES += $(call add_plugin_subdirs, tnccs-20, batch messages state_machine)
-ifneq ($(call plugin_enabled, tnccs-20),)
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/plugins/tnccs_20/
-# for tls.h
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../libtls/
-endif
-
-ifneq ($(or $(call plugin_enabled, eap-tnc), $(call plugin_enabled, tnc-imc), \
-			$(call plugin_enabled, tnc-tnccs), $(call plugin_enabled, tnccs-20)),)
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../libtnccs/
-LOCAL_SHARED_LIBRARIES += libtnccs
-endif
-
-ifneq ($(or $(call plugin_enabled, tnc-imc), $(call plugin_enabled, tnc-tnccs), \
-			$(call plugin_enabled, tnccs-20)),)
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../libtncif/
-LOCAL_SHARED_LIBRARIES += libtncif
-endif
-
 # build libcharon --------------------------------------------------------------
 
 LOCAL_C_INCLUDES += \
-	$(libvstr_PATH) \
 	$(strongswan_PATH)/src/include \
 	$(strongswan_PATH)/src/libhydra \
-	$(strongswan_PATH)/src/libstrongswan \
-	$(strongswan_PATH)/src/libtncif
+	$(strongswan_PATH)/src/libstrongswan
 
 LOCAL_CFLAGS := $(strongswan_CFLAGS)
 

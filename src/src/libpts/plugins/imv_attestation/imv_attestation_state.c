@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2011-2012 Sansar Choinyambuu
- * Copyright (C) 2011-2013 Andreas Steffen
+ * Copyright (C) 2011-2014 Andreas Steffen
  * HSR Hochschule fuer Technik Rapperswil
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -63,22 +63,12 @@ struct private_imv_attestation_state_t {
 	/**
 	 * Maximum PA-TNC message size for this TNCCS connection
 	 */
-	u_int32_t max_msg_len;
+	uint32_t max_msg_len;
 
 	/**
 	 * Flags set for completed actions
 	 */
-	u_int32_t action_flags;
-
-	/**
-	 * Access Requestor ID Type
-	 */
-	u_int32_t ar_id_type;
-
-	/**
-	 * Access Requestor ID Value
-	 */
-	chunk_t ar_id_value;
+	uint32_t action_flags;
 
 	/**
 	 * IMV database session associated with TNCCS connection
@@ -113,7 +103,7 @@ struct private_imv_attestation_state_t {
 	/**
 	 * Measurement error flags
 	 */
-	u_int32_t measurement_error;
+	uint32_t measurement_error;
 
 	/**
 	 * TNC Reason String
@@ -127,7 +117,7 @@ struct private_imv_attestation_state_t {
  */
 struct func_comp_t {
 	pts_component_t *comp;
-	u_int8_t qualifier;
+	pts_comp_func_name_t* name;
 };
 
 /**
@@ -136,6 +126,7 @@ struct func_comp_t {
 static void free_func_comp(func_comp_t *this)
 {
 	this->comp->destroy(this->comp);
+	this->name->destroy(this->name);
 	free(this);
 }
 
@@ -158,6 +149,12 @@ static imv_lang_string_t reason_file_meas_pend[] = {
 	{ "en", "Pending file measurement" },
 	{ "de", "Ausstehende Dateimessung" },
 	{ "mn", "Xүлээгдэж байгаа файл" },
+	{ NULL, NULL }
+};
+
+static imv_lang_string_t reason_no_trusted_aik[] = {
+	{ "en", "No trusted AIK available" },
+	{ "de", "Kein vetrauenswürdiger AIK verfügbar" },
 	{ NULL, NULL }
 };
 
@@ -208,44 +205,27 @@ METHOD(imv_state_t, set_flags, void,
 }
 
 METHOD(imv_state_t, set_max_msg_len, void,
-	private_imv_attestation_state_t *this, u_int32_t max_msg_len)
+	private_imv_attestation_state_t *this, uint32_t max_msg_len)
 {
 	this->max_msg_len = max_msg_len;
 }
 
-METHOD(imv_state_t, get_max_msg_len, u_int32_t,
+METHOD(imv_state_t, get_max_msg_len, uint32_t,
 	private_imv_attestation_state_t *this)
 {
 	return this->max_msg_len;
 }
 
 METHOD(imv_state_t, set_action_flags, void,
-	private_imv_attestation_state_t *this, u_int32_t flags)
+	private_imv_attestation_state_t *this, uint32_t flags)
 {
 	this->action_flags |= flags;
 }
 
-METHOD(imv_state_t, get_action_flags, u_int32_t,
+METHOD(imv_state_t, get_action_flags, uint32_t,
 	private_imv_attestation_state_t *this)
 {
 	return this->action_flags;
-}
-
-METHOD(imv_state_t, set_ar_id, void,
-	private_imv_attestation_state_t *this, u_int32_t id_type, chunk_t id_value)
-{
-	this->ar_id_type = id_type;
-	this->ar_id_value = chunk_clone(id_value);
-}
-
-METHOD(imv_state_t, get_ar_id, chunk_t,
-	private_imv_attestation_state_t *this, u_int32_t *id_type)
-{
-	if (id_type)
-	{
-		*id_type = this->ar_id_type;
-	}
-	return this->ar_id_value;
 }
 
 METHOD(imv_state_t, set_session, void,
@@ -290,6 +270,40 @@ METHOD(imv_state_t, update_recommendation, void,
 	this->eval = tncif_policy_update_evaluation(this->eval, eval);
 }
 
+METHOD(imv_attestation_state_t, add_file_meas_reasons, void,
+	private_imv_attestation_state_t *this, imv_reason_string_t *reason_string)
+{
+	if (this->measurement_error & IMV_ATTESTATION_ERROR_FILE_MEAS_FAIL)
+	{
+		reason_string->add_reason(reason_string, reason_file_meas_fail);
+	}
+	if (this->measurement_error & IMV_ATTESTATION_ERROR_FILE_MEAS_PEND)
+	{
+		reason_string->add_reason(reason_string, reason_file_meas_pend);
+	}
+}
+
+METHOD(imv_attestation_state_t, add_comp_evid_reasons, void,
+	private_imv_attestation_state_t *this, imv_reason_string_t *reason_string)
+{
+	if (this->measurement_error & IMV_ATTESTATION_ERROR_NO_TRUSTED_AIK)
+	{
+		reason_string->add_reason(reason_string, reason_no_trusted_aik);
+	}
+	if (this->measurement_error & IMV_ATTESTATION_ERROR_COMP_EVID_FAIL)
+	{
+		reason_string->add_reason(reason_string, reason_comp_evid_fail);
+	}
+	if (this->measurement_error & IMV_ATTESTATION_ERROR_COMP_EVID_PEND)
+	{
+		reason_string->add_reason(reason_string, reason_comp_evid_pend);
+	}
+	if (this->measurement_error & IMV_ATTESTATION_ERROR_TPM_QUOTE_FAIL)
+	{
+		reason_string->add_reason(reason_string, reason_tpm_quote_fail);
+	}
+}
+
 METHOD(imv_state_t, get_reason_string, bool,
 	private_imv_attestation_state_t *this, enumerator_t *language_enumerator,
 	chunk_t *reason_string, char **reason_language)
@@ -299,33 +313,9 @@ METHOD(imv_state_t, get_reason_string, bool,
 
 	/* Instantiate a TNC Reason String object */
 	DESTROY_IF(this->reason_string);
-	this->reason_string = imv_reason_string_create(*reason_language);
-
-	if (this->measurement_error & IMV_ATTESTATION_ERROR_FILE_MEAS_FAIL)
-	{
-		this->reason_string->add_reason(this->reason_string,
-										reason_file_meas_fail);
-	}
-	if (this->measurement_error & IMV_ATTESTATION_ERROR_FILE_MEAS_PEND)
-	{
-		this->reason_string->add_reason(this->reason_string,
-										reason_file_meas_pend);
-	}
-	if (this->measurement_error & IMV_ATTESTATION_ERROR_COMP_EVID_FAIL)
-	{
-		this->reason_string->add_reason(this->reason_string,
-										reason_comp_evid_fail);
-	}
-	if (this->measurement_error & IMV_ATTESTATION_ERROR_COMP_EVID_PEND)
-	{
-		this->reason_string->add_reason(this->reason_string,
-										reason_comp_evid_pend);
-	}
-	if (this->measurement_error & IMV_ATTESTATION_ERROR_TPM_QUOTE_FAIL)
-	{
-		this->reason_string->add_reason(this->reason_string,
-										reason_tpm_quote_fail);
-	}
+	this->reason_string = imv_reason_string_create(*reason_language, "\n");
+	add_file_meas_reasons(this, this->reason_string);
+	add_comp_evid_reasons(this, this->reason_string);
 	*reason_string = this->reason_string->get_encoding(this->reason_string);
 
 	return TRUE;
@@ -345,7 +335,6 @@ METHOD(imv_state_t, destroy, void,
 	DESTROY_IF(this->reason_string);
 	this->components->destroy_function(this->components, (void *)free_func_comp);
 	this->pts->destroy(this->pts);
-	free(this->ar_id_value.ptr);
 	free(this);
 }
 
@@ -370,7 +359,7 @@ METHOD(imv_attestation_state_t, get_pts, pts_t*,
 
 METHOD(imv_attestation_state_t, create_component, pts_component_t*,
 	private_imv_attestation_state_t *this, pts_comp_func_name_t *name,
-	u_int32_t depth, pts_database_t *pts_db)
+	uint32_t depth, pts_database_t *pts_db)
 {
 	enumerator_t *enumerator;
 	func_comp_t *entry, *new_entry;
@@ -390,13 +379,13 @@ METHOD(imv_attestation_state_t, create_component, pts_component_t*,
 
 	if (found)
 	{
-		if (name->get_qualifier(name) == entry->qualifier)
+		if (name->equals(name, entry->name))
 		{
 			/* duplicate entry */
 			return NULL;
 		}
 		new_entry = malloc_thing(func_comp_t);
-		new_entry->qualifier = name->get_qualifier(name);
+		new_entry->name = name->clone(name);
 		new_entry->comp = entry->comp->get_ref(entry->comp);
 		this->components->insert_last(this->components, new_entry);
 		return entry->comp;
@@ -410,11 +399,39 @@ METHOD(imv_attestation_state_t, create_component, pts_component_t*,
 			return NULL;
 		}
 		new_entry = malloc_thing(func_comp_t);
-		new_entry->qualifier = name->get_qualifier(name);
+		new_entry->name = name->clone(name);
 		new_entry->comp = component;
 		this->components->insert_last(this->components, new_entry);
 		return component;
 	}
+}
+
+/**
+ * Enumerate file measurement entries
+ */
+static bool entry_filter(void *null, func_comp_t **entry, uint8_t *flags,
+						 void *i2, uint32_t *depth,
+						 void *i3, pts_comp_func_name_t **comp_name)
+{
+	pts_component_t *comp;
+	pts_comp_func_name_t *name;
+
+	comp = (*entry)->comp;
+	name = (*entry)->name;
+
+	*flags = comp->get_evidence_flags(comp);
+	*depth = comp->get_depth(comp);
+	*comp_name = name;
+
+	return TRUE;
+}
+
+METHOD(imv_attestation_state_t, create_component_enumerator, enumerator_t*,
+	private_imv_attestation_state_t *this)
+{
+	return enumerator_create_filter(
+				this->components->create_enumerator(this->components),
+				(void*)entry_filter, NULL, NULL);
 }
 
 METHOD(imv_attestation_state_t, get_component, pts_component_t*,
@@ -427,8 +444,7 @@ METHOD(imv_attestation_state_t, get_component, pts_component_t*,
 	enumerator = this->components->create_enumerator(this->components);
 	while (enumerator->enumerate(enumerator, &entry))
 	{
-		if (name->equals(name, entry->comp->get_comp_func_name(entry->comp)) &&
-			name->get_qualifier(name) == entry->qualifier)
+		if (name->equals(name, entry->name))
 		{
 			found = entry->comp;
 			break;
@@ -438,38 +454,43 @@ METHOD(imv_attestation_state_t, get_component, pts_component_t*,
 	return found;
 }
 
-METHOD(imv_attestation_state_t, get_measurement_error, u_int32_t,
+METHOD(imv_attestation_state_t, get_measurement_error, uint32_t,
 	private_imv_attestation_state_t *this)
 {
 	return this->measurement_error;
 }
 
 METHOD(imv_attestation_state_t, set_measurement_error, void,
-	private_imv_attestation_state_t *this, u_int32_t error)
+	private_imv_attestation_state_t *this, uint32_t error)
 {
 	this->measurement_error |= error;
 }
 
 METHOD(imv_attestation_state_t, finalize_components, void,
-	private_imv_attestation_state_t *this)
+	private_imv_attestation_state_t *this, bio_writer_t *result)
 {
 	func_comp_t *entry;
+	bool first = TRUE;
 
 	while (this->components->remove_last(this->components,
 										(void**)&entry) == SUCCESS)
 	{
-		if (!entry->comp->finalize(entry->comp, entry->qualifier))
+		if (first)
+		{
+			first = FALSE;
+		}
+		else
+		{
+			result->write_data(result, chunk_from_str("; "));
+		}
+		if (!entry->comp->finalize(entry->comp,
+								   entry->name->get_qualifier(entry->name),
+								   result))
 		{
 			set_measurement_error(this, IMV_ATTESTATION_ERROR_COMP_EVID_PEND);
 		}
 		free_func_comp(entry);
 	}
-}
-
-METHOD(imv_attestation_state_t, components_finalized, bool,
-	private_imv_attestation_state_t *this)
-{
-	return this->components->get_count(this->components) == 0;
 }
 
 /**
@@ -490,8 +511,6 @@ imv_state_t *imv_attestation_state_create(TNC_ConnectionID connection_id)
 				.get_max_msg_len = _get_max_msg_len,
 				.set_action_flags = _set_action_flags,
 				.get_action_flags = _get_action_flags,
-				.set_ar_id = _set_ar_id,
-				.get_ar_id = _get_ar_id,
 				.set_session = _set_session,
 				.get_session = _get_session,
 				.change_state = _change_state,
@@ -506,11 +525,13 @@ imv_state_t *imv_attestation_state_create(TNC_ConnectionID connection_id)
 			.set_handshake_state = _set_handshake_state,
 			.get_pts = _get_pts,
 			.create_component = _create_component,
+			.create_component_enumerator = _create_component_enumerator,
 			.get_component = _get_component,
 			.finalize_components = _finalize_components,
-			.components_finalized = _components_finalized,
 			.get_measurement_error = _get_measurement_error,
 			.set_measurement_error = _set_measurement_error,
+			.add_file_meas_reasons = _add_file_meas_reasons,
+			.add_comp_evid_reasons = _add_comp_evid_reasons,
 		},
 		.connection_id = connection_id,
 		.state = TNC_CONNECTION_STATE_CREATE,

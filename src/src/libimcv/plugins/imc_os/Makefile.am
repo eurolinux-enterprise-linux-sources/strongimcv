@@ -4,7 +4,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/libimcv
 
 AM_CFLAGS = \
-	-rdynamic
+	$(PLUGIN_CFLAGS)
 
 imcv_LTLIBRARIES = imc-os.la
 
@@ -13,4 +13,4 @@ imc_os_la_LIBADD = $(top_builddir)/src/libimcv/libimcv.la \
 
 imc_os_la_SOURCES = imc_os.c imc_os_state.h imc_os_state.c
 
-imc_os_la_LDFLAGS = -module -avoid-version
+imc_os_la_LDFLAGS = -module -avoid-version -no-undefined

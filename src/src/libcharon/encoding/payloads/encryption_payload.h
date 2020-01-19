@@ -71,13 +71,15 @@ struct encryption_payload_t {
 	/**
 	 * Generate, encrypt and sign contained payloads.
 	 *
+	 * @param mid			message ID
 	 * @param assoc			associated data
 	 * @return
 	 * 						- SUCCESS if encryption successful
 	 * 						- FAILED if encryption failed
 	 * 						- INVALID_STATE if aead not supplied, but needed
 	 */
-	status_t (*encrypt) (encryption_payload_t *this, chunk_t assoc);
+	status_t (*encrypt) (encryption_payload_t *this, u_int64_t mid,
+						 chunk_t assoc);
 
 	/**
 	 * Decrypt, verify and parse contained payloads.
@@ -101,7 +103,7 @@ struct encryption_payload_t {
 /**
  * Creates an empty encryption_payload_t object.
  *
- * @param type		ENCRYPTED or ENCRYPTED_V1
+ * @param type		PLV2_ENCRYPTED or PLV1_ENCRYPTED
  * @return			encryption_payload_t object
  */
 encryption_payload_t *encryption_payload_create(payload_type_t type);

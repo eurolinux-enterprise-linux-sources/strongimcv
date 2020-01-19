@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2013-2014 Tobias Brunner
  * Copyright (C) 2008 Martin Willi
  * Hochschule fuer Technik Rapperswil
  *
@@ -19,6 +20,7 @@
 #include <threading/rwlock.h>
 #include <collections/linked_list.h>
 #include <crypto/crypto_tester.h>
+#include <utils/test.h>
 
 const char *default_plugin_name = "default";
 
@@ -174,7 +176,7 @@ METHOD(crypto_factory_t, create_crypter, crypter_t*,
 
 METHOD(crypto_factory_t, create_aead, aead_t*,
 	private_crypto_factory_t *this, encryption_algorithm_t algo,
-	size_t key_size)
+	size_t key_size, size_t salt_size)
 {
 	enumerator_t *enumerator;
 	entry_t *entry;
@@ -188,12 +190,12 @@ METHOD(crypto_factory_t, create_aead, aead_t*,
 		{
 			if (this->test_on_create &&
 				!this->tester->test_aead(this->tester, algo, key_size,
-										 entry->create_aead, NULL,
+										 salt_size, entry->create_aead, NULL,
 										 default_plugin_name))
 			{
 				continue;
 			}
-			aead = entry->create_aead(algo, key_size);
+			aead = entry->create_aead(algo, key_size, salt_size);
 			if (aead)
 			{
 				break;
@@ -234,7 +236,6 @@ METHOD(crypto_factory_t, create_signer, signer_t*,
 	}
 	enumerator->destroy(enumerator);
 	this->lock->unlock(this->lock);
-
 	return signer;
 }
 
@@ -249,9 +250,9 @@ METHOD(crypto_factory_t, create_hasher, hasher_t*,
 	enumerator = this->hashers->create_enumerator(this->hashers);
 	while (enumerator->enumerate(enumerator, &entry))
 	{
-		if (algo == HASH_PREFERRED || entry->algo == algo)
+		if (entry->algo == algo)
 		{
-			if (this->test_on_create && algo != HASH_PREFERRED &&
+			if (this->test_on_create &&
 				!this->tester->test_hasher(this->tester, algo,
 										   entry->create_hasher, NULL,
 										   default_plugin_name))
@@ -307,14 +308,13 @@ METHOD(crypto_factory_t, create_rng, rng_t*,
 {
 	enumerator_t *enumerator;
 	entry_t *entry;
-	u_int diff = ~0;
-	rng_constructor_t constr = NULL;
+	rng_t *rng = NULL;
 
 	this->lock->read_lock(this->lock);
 	enumerator = this->rngs->create_enumerator(this->rngs);
 	while (enumerator->enumerate(enumerator, &entry))
 	{	/* find the best matching quality, but at least as good as requested */
-		if (entry->algo >= quality && diff > entry->algo - quality)
+		if (entry->algo >= quality)
 		{
 			if (this->test_on_create &&
 				!this->tester->test_rng(this->tester, quality,
@@ -323,21 +323,16 @@ METHOD(crypto_factory_t, create_rng, rng_t*,
 			{
 				continue;
 			}
-			diff = entry->algo - quality;
-			constr = entry->create_rng;
-			if (diff == 0)
-			{	/* perfect match, won't get better */
+			rng = entry->create_rng(quality);
+			if (rng)
+			{
 				break;
 			}
 		}
 	}
 	enumerator->destroy(enumerator);
 	this->lock->unlock(this->lock);
-	if (constr)
-	{
-		return constr(quality);
-	}
-	return NULL;
+	return rng;
 }
 
 METHOD(crypto_factory_t, create_nonce_gen, nonce_gen_t*,
@@ -396,14 +391,19 @@ METHOD(crypto_factory_t, create_dh, diffie_hellman_t*,
 
 /**
  * Insert an algorithm entry to a list
+ *
+ * Entries maintain the order in which algorithms were added, unless they were
+ * benchmarked and speed is provided, which then is used to order entries of
+ * the same algorithm.
+ * An exception are RNG entries, which are sorted by algorithm identifier.
  */
 static void add_entry(private_crypto_factory_t *this, linked_list_t *list,
 					  int algo, const char *plugin_name,
 					  u_int speed, void *create)
 {
+	enumerator_t *enumerator;
 	entry_t *entry, *current;
-	linked_list_t *tmp;
-	bool inserted = FALSE;
+	bool sort = (list == this->rngs), found = FALSE;
 
 	INIT(entry,
 		.algo = algo,
@@ -413,30 +413,28 @@ static void add_entry(private_crypto_factory_t *this, linked_list_t *list,
 	entry->create = create;
 
 	this->lock->write_lock(this->lock);
-	if (speed)
-	{	/* insert sorted by speed using a temporary list */
-		tmp = linked_list_create();
-		while (list->remove_first(list, (void**)&current) == SUCCESS)
-		{
-			tmp->insert_last(tmp, current);
-		}
-		while (tmp->remove_first(tmp, (void**)&current) == SUCCESS)
-		{
-			if (!inserted &&
-				current->algo == algo &&
-				current->speed < speed)
-			{
-				list->insert_last(list, entry);
-				inserted = TRUE;
-			}
-			list->insert_last(list, current);
-		}
-		tmp->destroy(tmp);
-	}
-	if (!inserted)
+	enumerator = list->create_enumerator(list);
+	while (enumerator->enumerate(enumerator, &current))
 	{
-		list->insert_last(list, entry);
+		if (sort && current->algo > algo)
+		{
+			break;
+		}
+		else if (current->algo == algo)
+		{
+			if (speed > current->speed)
+			{
+				break;
+			}
+			found = TRUE;
+		}
+		else if (found)
+		{
+			break;
+		}
 	}
+	list->insert_before(list, enumerator, entry);
+	enumerator->destroy(enumerator);
 	this->lock->unlock(this->lock);
 }
 
@@ -484,7 +482,7 @@ METHOD(crypto_factory_t, add_aead, bool,
 	u_int speed = 0;
 
 	if (!this->test_on_add ||
-		this->tester->test_aead(this->tester, algo, 0, create,
+		this->tester->test_aead(this->tester, algo, 0, 0, create,
 								this->bench ? &speed : NULL, plugin_name))
 	{
 		add_entry(this, this->aeads, algo, plugin_name, speed, create);
@@ -978,12 +976,48 @@ crypto_factory_t *crypto_factory_create()
 		.lock = rwlock_create(RWLOCK_TYPE_DEFAULT),
 		.tester = crypto_tester_create(),
 		.test_on_add = lib->settings->get_bool(lib->settings,
-								"libstrongswan.crypto_test.on_add", FALSE),
+								"%s.crypto_test.on_add", FALSE, lib->ns),
 		.test_on_create = lib->settings->get_bool(lib->settings,
-								"libstrongswan.crypto_test.on_create", FALSE),
+								"%s.crypto_test.on_create", FALSE, lib->ns),
 		.bench = lib->settings->get_bool(lib->settings,
-								"libstrongswan.crypto_test.bench", FALSE),
+								"%s.crypto_test.bench", FALSE, lib->ns),
 	);
 
 	return &this->public;
 }
+
+/**
+ * Manually verify all registered algorithms against test vectors
+ */
+static u_int verify_registered_algorithms(crypto_factory_t *factory)
+{
+	private_crypto_factory_t *this = (private_crypto_factory_t*)factory;
+	enumerator_t *enumerator;
+	entry_t *entry;
+	u_int failures = 0;
+
+#define TEST_ALGORITHMS(test, ...) do { \
+	enumerator = this->test##s->create_enumerator(this->test##s); \
+	while (enumerator->enumerate(enumerator, &entry)) \
+	{ \
+		if (!this->tester->test_##test(this->tester, entry->algo, ##__VA_ARGS__, \
+							entry->create_##test, NULL, entry->plugin_name)) \
+		{ \
+			failures++; \
+		} \
+	} \
+	enumerator->destroy(enumerator); \
+} while (0)
+
+	this->lock->read_lock(this->lock);
+	TEST_ALGORITHMS(crypter, 0);
+	TEST_ALGORITHMS(aead, 0, 0);
+	TEST_ALGORITHMS(signer);
+	TEST_ALGORITHMS(hasher);
+	TEST_ALGORITHMS(prf);
+	TEST_ALGORITHMS(rng);
+	this->lock->unlock(this->lock);
+	return failures;
+}
+
+EXPORT_FUNCTION_FOR_TESTS(crypto, verify_registered_algorithms);

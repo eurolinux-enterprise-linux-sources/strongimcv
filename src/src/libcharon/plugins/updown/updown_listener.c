@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2013 Tobias Brunner
  * Copyright (C) 2008 Martin Willi
  * Hochschule fuer Technik Rapperswil
  *
@@ -174,6 +175,27 @@ static char *make_vip_vars(private_updown_listener_t *this, ike_sa_t *ike_sa)
 	return strdup(total);
 }
 
+/**
+ * Determine proper values for port env variable
+ */
+static u_int16_t get_port(traffic_selector_t *me,
+						  traffic_selector_t *other, bool local)
+{
+	switch (max(me->get_protocol(me), other->get_protocol(other)))
+	{
+		case IPPROTO_ICMP:
+		case IPPROTO_ICMPV6:
+		{
+			u_int16_t port = me->get_from_port(me);
+
+			port = max(port, other->get_from_port(other));
+			return local ? traffic_selector_icmp_type(port)
+						 : traffic_selector_icmp_code(port);
+		}
+	}
+	return local ? me->get_from_port(me) : other->get_from_port(other);
+}
+
 METHOD(listener_t, child_updown, bool,
 	private_updown_listener_t *this, ike_sa_t *ike_sa, child_sa_t *child_sa,
 	bool up)
@@ -197,12 +219,12 @@ METHOD(listener_t, child_updown, bool,
 	enumerator = child_sa->create_policy_enumerator(child_sa);
 	while (enumerator->enumerate(enumerator, &my_ts, &other_ts))
 	{
-		char command[1024];
+		char command[2048];
 		host_t *my_client, *other_client;
 		u_int8_t my_client_mask, other_client_mask;
 		char *virtual_ip, *iface, *mark_in, *mark_out, *udp_enc, *dns, *xauth;
 		mark_t mark;
-		bool is_host, is_ipv6;
+		bool is_host, is_ipv6, use_ipcomp;
 		FILE *shell;
 
 		my_ts->to_subnet(my_ts, &my_client, &my_client_mask);
@@ -289,6 +311,10 @@ METHOD(listener_t, child_updown, bool,
 			{
 				cache_iface(this, child_sa->get_reqid(child_sa), iface);
 			}
+			else
+			{
+				iface = NULL;
+			}
 		}
 		else
 		{
@@ -297,13 +323,15 @@ METHOD(listener_t, child_updown, bool,
 
 		dns = make_dns_vars(this, ike_sa);
 
+		/* check for IPComp */
+		use_ipcomp = child_sa->get_ipcomp(child_sa) != IPCOMP_NONE;
+
 		/* determine IPv4/IPv6 and client/host situation */
 		is_host = my_ts->is_host(my_ts, me);
 		is_ipv6 = is_host ? (me->get_family(me) == AF_INET6) :
 							(my_ts->get_type(my_ts) == TS_IPV6_ADDR_RANGE);
 
 		/* build the command with all env variables.
-		 * TODO: PLUTO_PEER_CA and PLUTO_NEXT_HOP are currently missing
 		 */
 		snprintf(command, sizeof(command),
 				 "2>&1 "
@@ -312,17 +340,19 @@ METHOD(listener_t, child_updown, bool,
 				"PLUTO_CONNECTION='%s' "
 				"PLUTO_INTERFACE='%s' "
 				"PLUTO_REQID='%u' "
+				"PLUTO_PROTO='%s' "
 				"PLUTO_UNIQUEID='%u' "
 				"PLUTO_ME='%H' "
 				"PLUTO_MY_ID='%Y' "
-				"PLUTO_MY_CLIENT='%H/%u' "
+				"PLUTO_MY_CLIENT='%+H/%u' "
 				"PLUTO_MY_PORT='%u' "
 				"PLUTO_MY_PROTOCOL='%u' "
 				"PLUTO_PEER='%H' "
 				"PLUTO_PEER_ID='%Y' "
-				"PLUTO_PEER_CLIENT='%H/%u' "
+				"PLUTO_PEER_CLIENT='%+H/%u' "
 				"PLUTO_PEER_PORT='%u' "
 				"PLUTO_PEER_PROTOCOL='%u' "
+				"%s"
 				"%s"
 				"%s"
 				"%s"
@@ -337,20 +367,22 @@ METHOD(listener_t, child_updown, bool,
 				 config->get_name(config),
 				 iface ? iface : "unknown",
 				 child_sa->get_reqid(child_sa),
+				 child_sa->get_protocol(child_sa) == PROTO_ESP ? "esp" : "ah",
 				 ike_sa->get_unique_id(ike_sa),
 				 me, ike_sa->get_my_id(ike_sa),
 				 my_client, my_client_mask,
-				 my_ts->get_from_port(my_ts),
+				 get_port(my_ts, other_ts, TRUE),
 				 my_ts->get_protocol(my_ts),
 				 other, ike_sa->get_other_id(ike_sa),
 				 other_client, other_client_mask,
-				 other_ts->get_from_port(other_ts),
+				 get_port(my_ts, other_ts, FALSE),
 				 other_ts->get_protocol(other_ts),
 				 xauth,
 				 virtual_ip,
 				 mark_in,
 				 mark_out,
 				 udp_enc,
+				 use_ipcomp ? "PLUTO_IPCOMP='1' " : "",
 				 config->get_hostaccess(config) ? "PLUTO_HOST_ACCESS='1' " : "",
 				 dns,
 				 script);

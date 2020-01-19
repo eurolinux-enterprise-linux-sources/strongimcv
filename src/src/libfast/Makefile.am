@@ -3,7 +3,10 @@ AM_CPPFLAGS = \
 	-I/usr/include/ClearSilver
 
 AM_CFLAGS = \
-	-rdynamic
+	$(PLUGIN_CFLAGS)
+
+AM_LDFLAGS = \
+	-no-undefined
 
 ipseclib_LTLIBRARIES = libfast.la
 
@@ -17,5 +20,6 @@ nobase_fast_include_HEADERS = \
 	fast_request.h fast_session.h fast_smtp.h
 endif
 
-libfast_la_LIBADD = $(top_builddir)/src/libstrongswan/libstrongswan.la \
-  -lfcgi $(clearsilver_LIBS) $(PTHREADLIB)
+libfast_la_LIBADD = \
+	$(top_builddir)/src/libstrongswan/libstrongswan.la \
+	-lfcgi $(clearsilver_LIBS) $(PTHREADLIB)

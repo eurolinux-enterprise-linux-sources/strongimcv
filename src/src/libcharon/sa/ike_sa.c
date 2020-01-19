@@ -687,6 +687,14 @@ METHOD(ike_sa_t, set_state, void,
 					DBG1(DBG_IKE, "maximum IKE_SA lifetime %ds", t);
 				}
 				trigger_dpd = this->peer_cfg->get_dpd(this->peer_cfg);
+				if (trigger_dpd)
+				{
+					/* Some peers delay the DELETE after rekeying an IKE_SA.
+					 * If this delay is longer than our DPD delay, we would
+					 * send a DPD request here. The IKE_SA is not ready to do
+					 * so yet, so prevent that. */
+					this->stats[STAT_INBOUND] = this->stats[STAT_ESTABLISHED];
+				}
 			}
 			break;
 		}
@@ -1077,7 +1085,7 @@ METHOD(ike_sa_t, initiate_mediated, status_t,
 static void resolve_hosts(private_ike_sa_t *this)
 {
 	host_t *host;
-	int family = 0;
+	int family = AF_UNSPEC;
 
 	switch (charon->socket->supported_families(charon->socket))
 	{
@@ -1099,12 +1107,7 @@ static void resolve_hosts(private_ike_sa_t *this)
 	}
 	else
 	{
-		char *other_addr;
-		u_int16_t other_port;
-
-		other_addr = this->ike_cfg->get_other_addr(this->ike_cfg, NULL);
-		other_port = this->ike_cfg->get_other_port(this->ike_cfg);
-		host = host_create_from_dns(other_addr, family, other_port);
+		host = this->ike_cfg->resolve_other(this->ike_cfg, family);
 	}
 	if (host)
 	{
@@ -1118,17 +1121,12 @@ static void resolve_hosts(private_ike_sa_t *this)
 	}
 	else
 	{
-		char *my_addr;
-		u_int16_t my_port;
-
 		/* use same address family as for other */
 		if (!this->other_host->is_anyaddr(this->other_host))
 		{
 			family = this->other_host->get_family(this->other_host);
 		}
-		my_addr = this->ike_cfg->get_my_addr(this->ike_cfg, NULL);
-		my_port = this->ike_cfg->get_my_port(this->ike_cfg);
-		host = host_create_from_dns(my_addr, family, my_port);
+		host = this->ike_cfg->resolve_me(this->ike_cfg, family);
 
 		if (host && host->is_anyaddr(host) &&
 			!this->other_host->is_anyaddr(this->other_host))
@@ -1142,7 +1140,7 @@ static void resolve_hosts(private_ike_sa_t *this)
 			}
 			else
 			{	/* fallback to address family specific %any(6), if configured */
-				host = host_create_from_dns(my_addr, family, my_port);
+				host = this->ike_cfg->resolve_me(this->ike_cfg, family);
 			}
 		}
 	}
@@ -1172,20 +1170,13 @@ METHOD(ike_sa_t, initiate, status_t,
 #endif /* ME */
 			)
 		{
-			char *addr = this->ike_cfg->get_other_addr(this->ike_cfg, NULL);
-			bool is_anyaddr = streq(addr, "%any") || streq(addr, "%any6");
+			char *addr;
 
-			if (is_anyaddr || !this->retry_initiate_interval)
+			addr = this->ike_cfg->get_other_addr(this->ike_cfg);
+			if (!this->retry_initiate_interval)
 			{
-				if (is_anyaddr)
-				{
-					DBG1(DBG_IKE, "unable to initiate to %s", addr);
-				}
-				else
-				{
-					DBG1(DBG_IKE, "unable to resolve %s, initiate aborted",
-						 addr);
-				}
+				DBG1(DBG_IKE, "unable to resolve %s, initiate aborted",
+					 addr);
 				DESTROY_IF(child_cfg);
 				charon->bus->alert(charon->bus, ALERT_PEER_ADDR_FAILED);
 				return DESTROY_ME;
@@ -1659,6 +1650,8 @@ METHOD(ike_sa_t, reestablish, status_t,
 	new->set_other_host(new, host->clone(host));
 	host = this->my_host;
 	new->set_my_host(new, host->clone(host));
+	/* resolve hosts but use the old addresses above as fallback */
+	resolve_hosts((private_ike_sa_t*)new);
 	/* if we already have a virtual IP, we reuse it */
 	enumerator = array_create_enumerator(this->my_vips);
 	while (enumerator->enumerate(enumerator, &host))
@@ -2008,6 +2001,26 @@ METHOD(ike_sa_t, add_configuration_attribute, void,
 	array_insert(this->attributes, ARRAY_TAIL, &entry);
 }
 
+/**
+ * Enumerator filter for attributes
+ */
+static bool filter_attribute(void *null, attribute_entry_t **in,
+							 configuration_attribute_type_t *type, void *in2,
+							 chunk_t *data, void *in3, bool *handled)
+{
+	*type = (*in)->type;
+	*data = (*in)->data;
+	*handled = (*in)->handler != NULL;
+	return TRUE;
+}
+
+METHOD(ike_sa_t, create_attribute_enumerator, enumerator_t*,
+	private_ike_sa_t *this)
+{
+	return enumerator_create_filter(array_create_enumerator(this->attributes),
+									(void*)filter_attribute, NULL, NULL);
+}
+
 METHOD(ike_sa_t, create_task_enumerator, enumerator_t*,
 	private_ike_sa_t *this, task_queue_t queue)
 {
@@ -2026,7 +2039,24 @@ METHOD(ike_sa_t, queue_task, void,
 	this->task_manager->queue_task(this->task_manager, task);
 }
 
-METHOD(ike_sa_t, inherit, void,
+METHOD(ike_sa_t, inherit_pre, void,
+	private_ike_sa_t *this, ike_sa_t *other_public)
+{
+	private_ike_sa_t *other = (private_ike_sa_t*)other_public;
+
+	/* apply config and hosts */
+	set_peer_cfg(this, other->peer_cfg);
+	set_my_host(this, other->my_host->clone(other->my_host));
+	set_other_host(this, other->other_host->clone(other->other_host));
+
+	/* apply extensions and conditions with a few exceptions */
+	this->extensions = other->extensions;
+	this->conditions = other->conditions;
+	this->conditions &= ~COND_STALE;
+	this->conditions &= ~COND_REAUTHENTICATING;
+}
+
+METHOD(ike_sa_t, inherit_post, void,
 	private_ike_sa_t *this, ike_sa_t *other_public)
 {
 	private_ike_sa_t *other = (private_ike_sa_t*)other_public;
@@ -2132,13 +2162,20 @@ METHOD(ike_sa_t, destroy, void,
 	charon->bus->set_sa(charon->bus, &this->public);
 
 	set_state(this, IKE_DESTROYING);
-	DESTROY_IF(this->task_manager);
+	if (this->task_manager)
+	{
+		this->task_manager->flush(this->task_manager);
+	}
 
 	/* remove attributes first, as we pass the IKE_SA to the handler */
+	charon->bus->handle_vips(charon->bus, &this->public, FALSE);
 	while (array_remove(this->attributes, ARRAY_TAIL, &entry))
 	{
-		hydra->attributes->release(hydra->attributes, entry.handler,
-								   this->other_id, entry.type, entry.data);
+		if (entry.handler)
+		{
+			hydra->attributes->release(hydra->attributes, entry.handler,
+									   this->other_id, entry.type, entry.data);
+		}
 		free(entry.data.ptr);
 	}
 	/* uninstall CHILD_SAs before virtual IPs, otherwise we might kill
@@ -2176,6 +2213,7 @@ METHOD(ike_sa_t, destroy, void,
 	charon->bus->set_sa(charon->bus, NULL);
 
 	array_destroy(this->child_sas);
+	DESTROY_IF(this->task_manager);
 	DESTROY_IF(this->keymat);
 	array_destroy(this->attributes);
 	array_destroy(this->my_vips);
@@ -2291,7 +2329,8 @@ ike_sa_t * ike_sa_create(ike_sa_id_t *ike_sa_id, bool initiator,
 			.reestablish = _reestablish,
 			.set_auth_lifetime = _set_auth_lifetime,
 			.roam = _roam,
-			.inherit = _inherit,
+			.inherit_pre = _inherit_pre,
+			.inherit_post = _inherit_post,
 			.generate_message = _generate_message,
 			.reset = _reset,
 			.get_unique_id = _get_unique_id,
@@ -2299,6 +2338,7 @@ ike_sa_t * ike_sa_create(ike_sa_id_t *ike_sa_id, bool initiator,
 			.clear_virtual_ips = _clear_virtual_ips,
 			.create_virtual_ip_enumerator = _create_virtual_ip_enumerator,
 			.add_configuration_attribute = _add_configuration_attribute,
+			.create_attribute_enumerator = _create_attribute_enumerator,
 			.set_kmaddress = _set_kmaddress,
 			.create_task_enumerator = _create_task_enumerator,
 			.flush_queue = _flush_queue,
@@ -2332,11 +2372,11 @@ ike_sa_t * ike_sa_create(ike_sa_id_t *ike_sa_id, bool initiator,
 		.attributes = array_create(sizeof(attribute_entry_t), 0),
 		.unique_id = ref_get(&unique_id),
 		.keepalive_interval = lib->settings->get_time(lib->settings,
-							"%s.keep_alive", KEEPALIVE_INTERVAL, charon->name),
+								"%s.keep_alive", KEEPALIVE_INTERVAL, lib->ns),
 		.retry_initiate_interval = lib->settings->get_time(lib->settings,
-							"%s.retry_initiate_interval", 0, charon->name),
+								"%s.retry_initiate_interval", 0, lib->ns),
 		.flush_auth_cfg = lib->settings->get_bool(lib->settings,
-							"%s.flush_auth_cfg", FALSE, charon->name),
+								"%s.flush_auth_cfg", FALSE, lib->ns),
 	);
 
 	if (version == IKEV2)

@@ -188,7 +188,7 @@ static bool policy_start(database_t *db, int session_id)
 	e->destroy(e);
 
 	/* if a device ID with a creation date exists, get all group memberships */
-	if (device_id & created)
+	if (device_id && created)
 	{
 		e = db->query(db,
 				"SELECT group_id FROM groups_members WHERE device_id = ?",
@@ -278,7 +278,7 @@ static bool policy_stop(database_t *db, int session_id)
 int main(int argc, char *argv[])
 {
 	database_t *db;
-	char *uri, *tnc_session_id;
+	char *uri;
 	int session_id;
 	bool start, success;
 
@@ -288,7 +288,7 @@ int main(int argc, char *argv[])
 	atexit(library_deinit);
 
 	/* initialize library */
-	if (!library_init(NULL))
+	if (!library_init(NULL, "imv_policy_manager"))
 	{
 		exit(SS_RC_LIBSTRONGSWAN_INTEGRITY);
 	}
@@ -299,7 +299,7 @@ int main(int argc, char *argv[])
 		exit(SS_RC_INITIALIZATION_FAILED);
 	}
 
-	if (argc < 2)
+	if (argc < 3)
 	{
 		usage();
 		exit(SS_RC_INITIALIZATION_FAILED);
@@ -318,17 +318,15 @@ int main(int argc, char *argv[])
 		exit(SS_RC_INITIALIZATION_FAILED);
 	}
 
-	/* get session ID */
-	tnc_session_id = getenv("TNC_SESSION_ID");
-	if (!tnc_session_id)
-	{
-		fprintf(stderr, "environment variable TNC_SESSION_ID is not defined\n");
-		exit(SS_RC_INITIALIZATION_FAILED);
-	}
-	session_id = atoi(tnc_session_id);
+	session_id = atoi(argv[2]);
 
 	/* attach IMV database */
-	uri = lib->settings->get_str(lib->settings, "libimcv.database", NULL);
+	uri = lib->settings->get_str(lib->settings,
+			"imv_policy_manager.database",
+			lib->settings->get_str(lib->settings,
+				"charon.imcv.database",
+				lib->settings->get_str(lib->settings,
+					"libimcv.database", NULL)));
 	if (!uri)
 	{
 		fprintf(stderr, "database uri not defined.\n");

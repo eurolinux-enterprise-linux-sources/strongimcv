@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2011-2012 Sansar Choinyambuu
- * Copyright (C) 2011-2013 Andreas Steffen
+ * Copyright (C) 2011-2014 Andreas Steffen
  * HSR Hochschule fuer Technik Rapperswil
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -14,6 +14,9 @@
  * for more details.
  */
 
+#define _GNU_SOURCE /* for stdndup() */
+#include <string.h>
+
 #include "imv_attestation_agent.h"
 #include "imv_attestation_state.h"
 #include "imv_attestation_process.h"
@@ -22,21 +25,28 @@
 #include <imcv.h>
 #include <imv/imv_agent.h>
 #include <imv/imv_msg.h>
+#include <imv/imv_session.h>
+#include <imv/imv_os_info.h>
 #include <ietf/ietf_attr.h>
 #include <ietf/ietf_attr_attr_request.h>
 #include <ietf/ietf_attr_pa_tnc_error.h>
 #include <ietf/ietf_attr_product_info.h>
 #include <ietf/ietf_attr_string_version.h>
+#include <ita/ita_attr.h>
+#include <ita/ita_attr_device_id.h>
 
 #include <libpts.h>
 
 #include <pts/pts.h>
 #include <pts/pts_database.h>
 #include <pts/pts_creds.h>
+#include <pts/components/ita/ita_comp_func_name.h>
 
 #include <tcg/tcg_attr.h>
-#include <tcg/tcg_pts_attr_req_file_meas.h>
-#include <tcg/tcg_pts_attr_req_file_meta.h>
+#include <tcg/pts/tcg_pts_attr_meas_algo.h>
+#include <tcg/pts/tcg_pts_attr_proto_caps.h>
+#include <tcg/pts/tcg_pts_attr_req_file_meas.h>
+#include <tcg/pts/tcg_pts_attr_req_file_meta.h>
 
 #include <tncif_pa_subtypes.h>
 
@@ -105,7 +115,9 @@ METHOD(imv_agent_if_t, notify_connection_change, TNC_Result,
 	private_imv_attestation_agent_t *this, TNC_ConnectionID id,
 	TNC_ConnectionState new_state)
 {
+	TNC_IMV_Action_Recommendation rec;
 	imv_state_t *state;
+	imv_session_t *session;
 
 	switch (new_state)
 	{
@@ -114,6 +126,35 @@ METHOD(imv_agent_if_t, notify_connection_change, TNC_Result,
 			return this->agent->create_state(this->agent, state);
 		case TNC_CONNECTION_STATE_DELETE:
 			return this->agent->delete_state(this->agent, id);
+		case TNC_CONNECTION_STATE_ACCESS_ALLOWED:
+		case TNC_CONNECTION_STATE_ACCESS_ISOLATED:
+		case TNC_CONNECTION_STATE_ACCESS_NONE:
+			if (this->agent->get_state(this->agent, id, &state) && imcv_db)
+			{
+				session = state->get_session(state);
+
+				if (session->get_policy_started(session))
+				{
+					switch (new_state)
+					{
+						case TNC_CONNECTION_STATE_ACCESS_ALLOWED:
+							rec = TNC_IMV_ACTION_RECOMMENDATION_ALLOW;
+							break;
+						case TNC_CONNECTION_STATE_ACCESS_ISOLATED:
+							rec = TNC_IMV_ACTION_RECOMMENDATION_ISOLATE;
+							break;
+						case TNC_CONNECTION_STATE_ACCESS_NONE:
+						default:
+							rec = TNC_IMV_ACTION_RECOMMENDATION_NO_ACCESS;
+					}
+					imcv_db->add_recommendation(imcv_db, session, rec);
+					if (!imcv_db->policy_script(imcv_db, session, FALSE))
+					{
+						DBG1(DBG_IMV, "error in policy script stop");
+					}
+				}
+			}
+			/* fall through to default state */
 		default:
 			return this->agent->change_state(this->agent, id, new_state, NULL);
 	}
@@ -125,15 +166,14 @@ METHOD(imv_agent_if_t, notify_connection_change, TNC_Result,
 static TNC_Result receive_msg(private_imv_attestation_agent_t *this,
 							  imv_state_t *state, imv_msg_t *in_msg)
 {
-	imv_attestation_state_t *attestation_state;
 	imv_msg_t *out_msg;
+	imv_session_t *session;
+	imv_os_info_t *os_info;
 	enumerator_t *enumerator;
 	pa_tnc_attr_t *attr;
 	pen_type_t type;
 	TNC_Result result;
-	pts_t *pts;
-	chunk_t os_name = chunk_empty;
-	chunk_t os_version = chunk_empty;
+	chunk_t os_name, os_version;
 	bool fatal_error = FALSE;
 
 	/* parse received PA-TNC message and handle local and remote errors */
@@ -143,8 +183,8 @@ static TNC_Result receive_msg(private_imv_attestation_agent_t *this,
 		return result;
 	}
 
-	attestation_state = (imv_attestation_state_t*)state;
-	pts = attestation_state->get_pts(attestation_state);
+	session = state->get_session(state);
+	os_info = session->get_os_info(session);
 
 	out_msg = imv_msg_create_as_reply(in_msg);
 	out_msg->set_msg_type(out_msg, msg_types[0]);
@@ -182,17 +222,64 @@ static TNC_Result receive_msg(private_imv_attestation_agent_t *this,
 				case IETF_ATTR_PRODUCT_INFORMATION:
 				{
 					ietf_attr_product_info_t *attr_cast;
+					pen_t vendor_id;
 
+					state->set_action_flags(state,
+										IMV_ATTESTATION_ATTR_PRODUCT_INFO);
 					attr_cast = (ietf_attr_product_info_t*)attr;
-					os_name = attr_cast->get_info(attr_cast, NULL, NULL);
+					os_name = attr_cast->get_info(attr_cast, &vendor_id, NULL);
+					os_info->set_name(os_info, os_name);
+
+					if (vendor_id != PEN_IETF)
+					{
+						DBG1(DBG_IMV, "operating system name is '%.*s' "
+									  "from vendor %N", os_name.len, os_name.ptr,
+									   pen_names, vendor_id);
+					}
+					else
+					{
+						DBG1(DBG_IMV, "operating system name is '%.*s'",
+									   os_name.len, os_name.ptr);
+					}
+					break;
+
 					break;
 				}
 				case IETF_ATTR_STRING_VERSION:
 				{
 					ietf_attr_string_version_t *attr_cast;
 
+					state->set_action_flags(state,
+										IMV_ATTESTATION_ATTR_STRING_VERSION);
 					attr_cast = (ietf_attr_string_version_t*)attr;
 					os_version = attr_cast->get_version(attr_cast, NULL, NULL);
+					os_info->set_version(os_info, os_version);
+
+					if (os_version.len)
+					{
+						DBG1(DBG_IMV, "operating system version is '%.*s'",
+									   os_version.len, os_version.ptr);
+					}
+					break;
+				}
+				default:
+					break;
+			}
+		}
+		else if (type.vendor_id == PEN_ITA)
+		{
+			switch (type.type)
+			{
+				case ITA_ATTR_DEVICE_ID:
+				{
+					chunk_t value;
+
+					state->set_action_flags(state,
+										IMV_ATTESTATION_ATTR_DEVICE_ID);
+
+					value = attr->get_value(attr);
+					DBG1(DBG_IMV, "device ID is %.*s", value.len, value.ptr);
+					session->set_device_id(session, value);
 					break;
 				}
 				default:
@@ -211,15 +298,6 @@ static TNC_Result receive_msg(private_imv_attestation_agent_t *this,
 		}
 	}
 	enumerator->destroy(enumerator);
-
-	/**
-	 * The IETF Product Information and String Version attributes
-	 * are supposed to arrive in the same PA-TNC message
-	 */
-	if (os_name.len && os_version.len)
-	{
-		pts->set_platform_info(pts, os_name, os_version);
-	}
 
 	if (fatal_error || result != TNC_RESULT_SUCCESS)
 	{
@@ -282,6 +360,31 @@ METHOD(imv_agent_if_t, receive_message_long, TNC_Result,
 	return result;
 }
 
+/**
+ * Build an IETF Attribute Request attribute for missing attributes
+ */
+static pa_tnc_attr_t* build_attr_request(uint32_t received)
+{
+	pa_tnc_attr_t *attr;
+	ietf_attr_attr_request_t *attr_cast;
+
+	attr = ietf_attr_attr_request_create(PEN_RESERVED, 0);
+	attr_cast = (ietf_attr_attr_request_t*)attr;
+
+	if (!(received & IMV_ATTESTATION_ATTR_PRODUCT_INFO) ||
+		!(received & IMV_ATTESTATION_ATTR_STRING_VERSION))
+	{
+		attr_cast->add(attr_cast, PEN_IETF, IETF_ATTR_PRODUCT_INFORMATION);
+		attr_cast->add(attr_cast, PEN_IETF, IETF_ATTR_STRING_VERSION);
+	}
+	if (!(received & IMV_ATTESTATION_ATTR_DEVICE_ID))
+	{
+		attr_cast->add(attr_cast, PEN_ITA,  ITA_ATTR_DEVICE_ID);
+	}
+
+	return attr;
+}
+
 METHOD(imv_agent_if_t, batch_ending, TNC_Result,
 	private_imv_attestation_agent_t *this, TNC_ConnectionID id)
 {
@@ -289,10 +392,16 @@ METHOD(imv_agent_if_t, batch_ending, TNC_Result,
 	imv_state_t *state;
 	imv_session_t *session;
 	imv_attestation_state_t *attestation_state;
+	imv_attestation_handshake_state_t handshake_state;
+	imv_workitem_t *workitem;
+	TNC_IMV_Action_Recommendation rec;
+	TNC_IMV_Evaluation_Result eval;
 	TNC_IMVID imv_id;
 	TNC_Result result = TNC_RESULT_SUCCESS;
 	pts_t *pts;
-	char *platform_info;
+	int pid;
+	uint32_t actions;
+	enumerator_t *enumerator;
 
 	if (!this->agent->get_state(this->agent, id, &state))
 	{
@@ -300,57 +409,115 @@ METHOD(imv_agent_if_t, batch_ending, TNC_Result,
 	}
 	attestation_state = (imv_attestation_state_t*)state;
 	pts = attestation_state->get_pts(attestation_state);
-	platform_info = pts->get_platform_info(pts);
+	handshake_state = attestation_state->get_handshake_state(attestation_state);
+	actions = state->get_action_flags(state);
 	session = state->get_session(state);
 	imv_id = this->agent->get_id(this->agent);
 
 	/* exit if a recommendation has already been provided */
-	if (state->get_action_flags(state) & IMV_ATTESTATION_FLAG_REC)
+	if (actions & IMV_ATTESTATION_REC)
 	{
 		return TNC_RESULT_SUCCESS;
 	}
 
 	/* send an IETF attribute request if no platform info was received */
-	if (!platform_info &&
-		!(state->get_action_flags(state) & IMV_ATTESTATION_FLAG_ATTR_REQ))
+	if (!(actions & IMV_ATTESTATION_ATTR_REQ))
+	{
+		if ((actions & IMV_ATTESTATION_ATTR_MUST) != IMV_ATTESTATION_ATTR_MUST)
+		{
+			imv_msg_t *os_msg;
+
+			/* create attribute request for missing mandatory attributes */
+			os_msg = imv_msg_create(this->agent, state, id, imv_id,
+									TNC_IMCID_ANY, msg_types[1]);
+			os_msg->add_attribute(os_msg, build_attr_request(actions));
+			result = os_msg->send(os_msg, FALSE);
+			os_msg->destroy(os_msg);
+
+			if (result != TNC_RESULT_SUCCESS)
+			{
+				return result;
+			}
+		 }
+		state->set_action_flags(state, IMV_ATTESTATION_ATTR_REQ);
+	}
+
+	if (!session->get_policy_started(session) &&
+		(actions & IMV_ATTESTATION_ATTR_PRODUCT_INFO) &&
+		(actions & IMV_ATTESTATION_ATTR_STRING_VERSION) &&
+		(actions & IMV_ATTESTATION_ATTR_DEVICE_ID))
+	{
+		if (imcv_db)
+		{
+			/* start the policy script */
+			if (!imcv_db->policy_script(imcv_db, session, TRUE))
+			{
+				DBG1(DBG_IMV, "error in policy script start");
+			}
+		}
+		else
+		{
+			DBG2(DBG_IMV, "no workitems available - no evaluation possible");
+			state->set_recommendation(state,
+									  TNC_IMV_ACTION_RECOMMENDATION_ALLOW,
+									  TNC_IMV_EVALUATION_RESULT_DONT_KNOW);
+			session->set_policy_started(session, TRUE);
+		}
+	}
+
+	if (handshake_state == IMV_ATTESTATION_STATE_INIT)
 	{
 		pa_tnc_attr_t *attr;
-		ietf_attr_attr_request_t *attr_cast;
-		imv_msg_t *os_msg;
+		pts_proto_caps_flag_t flags;
 
-		attr = ietf_attr_attr_request_create(PEN_IETF,
-											 IETF_ATTR_PRODUCT_INFORMATION);
-		attr_cast = (ietf_attr_attr_request_t*)attr;
-		attr_cast->add(attr_cast, PEN_IETF, IETF_ATTR_STRING_VERSION);
+		out_msg = imv_msg_create(this->agent, state, id, imv_id, TNC_IMCID_ANY,
+								 msg_types[0]);
 
-		os_msg = imv_msg_create(this->agent, state, id, imv_id, TNC_IMCID_ANY,
-								 msg_types[1]);
-		os_msg->add_attribute(os_msg, attr);
-		result = os_msg->send(os_msg, FALSE);
-		os_msg->destroy(os_msg);
+		/* Send Request Protocol Capabilities attribute */
+		flags = pts->get_proto_caps(pts);
+		attr = tcg_pts_attr_proto_caps_create(flags, TRUE);
+		attr->set_noskip_flag(attr, TRUE);
+		out_msg->add_attribute(out_msg, attr);
 
-		if (result != TNC_RESULT_SUCCESS)
-		{
-			return result;
-		}
-		state->set_action_flags(state, IMV_ATTESTATION_FLAG_ATTR_REQ);
+		/* Send Measurement Algorithms attribute */
+		attr = tcg_pts_attr_meas_algo_create(this->supported_algorithms, FALSE);
+		attr->set_noskip_flag(attr, TRUE);
+		out_msg->add_attribute(out_msg, attr);
+
+		attestation_state->set_handshake_state(attestation_state,
+										IMV_ATTESTATION_STATE_DISCOVERY);
+
+		/* send these initial PTS attributes and exit */
+		result = out_msg->send(out_msg, FALSE);
+		out_msg->destroy(out_msg);
+
+		return result;
 	}
+
+	/* exit if we are not ready yet for PTS measurements */
+	if (!(actions & IMV_ATTESTATION_ALGO))
+	{
+		return TNC_RESULT_SUCCESS;
+	}
+
+	session->get_session_id(session, &pid, NULL);
+	pts->set_platform_id(pts, pid);
 
 	/* create an empty out message - we might need it */
 	out_msg = imv_msg_create(this->agent, state, id, imv_id, TNC_IMCID_ANY,
 							 msg_types[0]);
 
-	if (platform_info && session &&
-	   (state->get_action_flags(state) & IMV_ATTESTATION_FLAG_ALGO) &&
-	  !(state->get_action_flags(state) & IMV_ATTESTATION_FLAG_FILE_MEAS))
+	/* establish the PTS measurements to be taken */
+	if (!(actions & IMV_ATTESTATION_FILE_MEAS))
 	{
-		imv_workitem_t *workitem;
 		bool is_dir, no_workitems = TRUE;
-		u_int32_t delimiter = SOLIDUS_UTF;
-		u_int16_t request_id;
+		uint32_t delimiter = SOLIDUS_UTF;
+		uint16_t request_id;
 		pa_tnc_attr_t *attr;
 		char *pathname;
-		enumerator_t *enumerator;
+
+		attestation_state->set_handshake_state(attestation_state,
+											   IMV_ATTESTATION_STATE_END);
 
 		enumerator = session->create_workitem_enumerator(session);
 		if (enumerator)
@@ -374,10 +541,91 @@ METHOD(imv_agent_if_t, batch_ending, TNC_Result,
 					case IMV_WORKITEM_DIR_META:
 						is_dir = TRUE;
 						break;
+					case IMV_WORKITEM_TPM_ATTEST:
+					{
+						pts_component_t *comp;
+						pts_comp_func_name_t *comp_name;
+						bool no_d_flag, no_t_flag;
+						char result_str[BUF_LEN];
+
+						workitem->set_imv_id(workitem, imv_id);
+						no_workitems = FALSE;
+						no_d_flag = !(pts->get_proto_caps(pts) & PTS_PROTO_CAPS_D);
+						no_t_flag = !(pts->get_proto_caps(pts) & PTS_PROTO_CAPS_T);
+						if (no_d_flag || no_t_flag)
+						{
+							snprintf(result_str, BUF_LEN, "%s%s%s",
+									(no_t_flag) ? "no TPM available" : "",
+									(no_t_flag && no_d_flag) ? ", " : "",
+									(no_d_flag) ? "no DH nonce negotiation" : "");
+							eval = TNC_IMV_EVALUATION_RESULT_ERROR;
+							session->remove_workitem(session, enumerator);
+							rec = workitem->set_result(workitem, result_str, eval);
+							state->update_recommendation(state, rec, eval);
+							imcv_db->finalize_workitem(imcv_db, workitem);
+							workitem->destroy(workitem);
+							continue;
+						}
+
+						/* do TPM BIOS measurements */
+						if (strchr(workitem->get_arg_str(workitem), 'B'))
+						{
+							comp_name = pts_comp_func_name_create(PEN_ITA,
+											PTS_ITA_COMP_FUNC_NAME_IMA,
+											PTS_ITA_QUALIFIER_FLAG_KERNEL |
+											PTS_ITA_QUALIFIER_TYPE_TRUSTED);
+							comp = attestation_state->create_component(
+											attestation_state, comp_name,
+											0, this->pts_db);
+							if (!comp)
+							{
+								comp_name->log(comp_name, "unregistered ");
+								comp_name->destroy(comp_name);
+							}
+						}
+
+						/* do TPM IMA measurements */
+						if (strchr(workitem->get_arg_str(workitem), 'I'))
+						{
+							comp_name = pts_comp_func_name_create(PEN_ITA,
+											PTS_ITA_COMP_FUNC_NAME_IMA,
+											PTS_ITA_QUALIFIER_FLAG_KERNEL |
+											PTS_ITA_QUALIFIER_TYPE_OS);
+							comp = attestation_state->create_component(
+											attestation_state, comp_name,
+											0, this->pts_db);
+							if (!comp)
+							{
+								comp_name->log(comp_name, "unregistered ");
+								comp_name->destroy(comp_name);
+							}
+						}
+
+						/* do TPM TRUSTED BOOT measurements */
+						if (strchr(workitem->get_arg_str(workitem), 'T'))
+						{
+							comp_name = pts_comp_func_name_create(PEN_ITA,
+											 PTS_ITA_COMP_FUNC_NAME_TBOOT,
+											PTS_ITA_QUALIFIER_FLAG_KERNEL |
+											PTS_ITA_QUALIFIER_TYPE_TRUSTED);
+							comp = attestation_state->create_component(
+											attestation_state, comp_name,
+											0, this->pts_db);
+							if (!comp)
+							{
+								comp_name->log(comp_name, "unregistered ");
+								comp_name->destroy(comp_name);
+							}
+						}
+						attestation_state->set_handshake_state(attestation_state,
+											IMV_ATTESTATION_STATE_NONCE_REQ);
+						continue;
+					}
 					default:
 						continue;
 				}
 
+				/* initiate file and directory measurements */
 				pathname = this->pts_db->get_pathname(this->pts_db, is_dir,
 											workitem->get_arg_int(workitem));
 				if (!pathname)
@@ -426,7 +674,7 @@ METHOD(imv_agent_if_t, batch_ending, TNC_Result,
 			enumerator->destroy(enumerator);
 
 			/* sent all file and directory measurement and metadata requests */
-			state->set_action_flags(state, IMV_ATTESTATION_FLAG_FILE_MEAS);
+			state->set_action_flags(state, IMV_ATTESTATION_FILE_MEAS);
 
 			if (no_workitems)
 			{
@@ -440,33 +688,45 @@ METHOD(imv_agent_if_t, batch_ending, TNC_Result,
 	}
 
 	/* check the IMV state for the next PA-TNC attributes to send */
-	if (!imv_attestation_build(out_msg, attestation_state,
-							  this->supported_algorithms,
-							  this->supported_dh_groups, this->pts_db))
+	enumerator = session->create_workitem_enumerator(session);
+	while (enumerator->enumerate(enumerator, &workitem))
 	{
-		state->set_recommendation(state,
-								TNC_IMV_ACTION_RECOMMENDATION_NO_RECOMMENDATION,
-								TNC_IMV_EVALUATION_RESULT_ERROR);
-		result = out_msg->send_assessment(out_msg);
-		out_msg->destroy(out_msg);
-		state->set_action_flags(state, IMV_ATTESTATION_FLAG_REC);
-
-		if (result != TNC_RESULT_SUCCESS)
+		if (workitem->get_type(workitem) == IMV_WORKITEM_TPM_ATTEST)
 		{
-			return result;
+			if (!imv_attestation_build(out_msg, state,
+									   this->supported_dh_groups, this->pts_db))
+			{
+				imv_reason_string_t *reason_string;
+				chunk_t result;
+				char *result_str;
+
+				reason_string = imv_reason_string_create("en", ", ");
+				attestation_state->add_comp_evid_reasons(attestation_state,
+													 reason_string);
+				result = reason_string->get_encoding(reason_string);
+				result_str = strndup(result.ptr, result.len);
+				reason_string->destroy(reason_string);
+
+				eval = TNC_IMV_EVALUATION_RESULT_ERROR;
+				session->remove_workitem(session, enumerator);
+				rec = workitem->set_result(workitem, result_str, eval);
+				state->update_recommendation(state, rec, eval);
+				imcv_db->finalize_workitem(imcv_db, workitem);
+			}
+			break;
 		}
-		return this->agent->provide_recommendation(this->agent, state);
 	}
+	enumerator->destroy(enumerator);
 
 	/* finalized all workitems? */
-	if (session && session->get_policy_started(session) &&
+	if (session->get_policy_started(session) &&
 		session->get_workitem_count(session, imv_id) == 0 &&
 		attestation_state->get_handshake_state(attestation_state) ==
 			IMV_ATTESTATION_STATE_END)
 	{
 		result = out_msg->send_assessment(out_msg);
 		out_msg->destroy(out_msg);
-		state->set_action_flags(state, IMV_ATTESTATION_FLAG_REC);
+		state->set_action_flags(state, IMV_ATTESTATION_REC);
 
 		if (result != TNC_RESULT_SUCCESS)
 		{
@@ -501,11 +761,16 @@ METHOD(imv_agent_if_t, solicit_recommendation, TNC_Result,
 	session = state->get_session(state);
 	imv_id = this->agent->get_id(this->agent);
 
-	if (session)
+	if (imcv_db)
 	{
+		TNC_IMV_Evaluation_Result eval;
+		TNC_IMV_Action_Recommendation rec;
 		imv_workitem_t *workitem;
 		enumerator_t *enumerator;
 		int pending_file_meas = 0;
+		char *result_str;
+		chunk_t result_buf;
+		bio_writer_t *result;
 
 		enumerator = session->create_workitem_enumerator(session);
 		if (enumerator)
@@ -516,17 +781,37 @@ METHOD(imv_agent_if_t, solicit_recommendation, TNC_Result,
 				{
 					continue;
 				}
+				result = bio_writer_create(128);
+
 				switch (workitem->get_type(workitem))
 				{
 					case IMV_WORKITEM_FILE_REF_MEAS:
 					case IMV_WORKITEM_FILE_MEAS:
 					case IMV_WORKITEM_DIR_REF_MEAS:
 					case IMV_WORKITEM_DIR_MEAS:
+						result_str = "pending file measurements";
 						pending_file_meas++;
 						break;
-					default:
+					case IMV_WORKITEM_TPM_ATTEST:
+						attestation_state->finalize_components(attestation_state,
+															   result);
+						result->write_data(result,
+								chunk_from_str("; pending component evidence"));
+						result->write_uint8(result, '\0');
+						result_buf = result->get_buf(result);
+						result_str = result_buf.ptr;
 						break;
+					default:
+						result->destroy(result);
+						continue;
 				}
+				session->remove_workitem(session, enumerator);
+				eval = TNC_IMV_EVALUATION_RESULT_ERROR;
+				rec = workitem->set_result(workitem, result_str, eval);
+				state->update_recommendation(state, rec, eval);
+				imcv_db->finalize_workitem(imcv_db, workitem);
+				workitem->destroy(workitem);
+				result->destroy(result);
 			}
 			enumerator->destroy(enumerator);
 
@@ -565,14 +850,25 @@ imv_agent_if_t *imv_attestation_agent_create(const char *name, TNC_IMVID id,
 										 TNC_Version *actual_version)
 {
 	private_imv_attestation_agent_t *this;
+	imv_agent_t *agent;
 	char *hash_alg, *dh_group, *cadir;
+	bool mandatory_dh_groups;
+
+	agent = imv_agent_create(name, msg_types, countof(msg_types), id,
+							 actual_version);
+	if (!agent)
+	{
+		return NULL;
+	}
 
 	hash_alg = lib->settings->get_str(lib->settings,
-					"libimcv.plugins.imv-attestation.hash_algorithm", "sha256");
+				"%s.plugins.imv-attestation.hash_algorithm", "sha256", lib->ns);
 	dh_group = lib->settings->get_str(lib->settings,
-					"libimcv.plugins.imv-attestation.dh_group", "ecp256");
+				"%s.plugins.imv-attestation.dh_group", "ecp256", lib->ns);
+	mandatory_dh_groups = lib->settings->get_bool(lib->settings,
+				"%s.plugins.imv-attestation.mandatory_dh_groups", TRUE, lib->ns);
 	cadir = lib->settings->get_str(lib->settings,
-					"libimcv.plugins.imv-attestation.cadir", NULL);
+				"%s.plugins.imv-attestation.cadir", NULL, lib->ns);
 
 	INIT(this,
 		.public = {
@@ -584,8 +880,7 @@ imv_agent_if_t *imv_attestation_agent_create(const char *name, TNC_IMVID id,
 			.solicit_recommendation = _solicit_recommendation,
 			.destroy = _destroy,
 		},
-		.agent = imv_agent_create(name, msg_types, countof(msg_types), id,
-								  actual_version),
+		.agent = agent,
 		.supported_algorithms = PTS_MEAS_ALGO_NONE,
 		.supported_dh_groups = PTS_DH_GROUP_NONE,
 		.pts_credmgr = credential_manager_create(),
@@ -595,9 +890,8 @@ imv_agent_if_t *imv_attestation_agent_create(const char *name, TNC_IMVID id,
 
 	libpts_init();
 
-	if (!this->agent ||
-		!pts_meas_algo_probe(&this->supported_algorithms) ||
-		!pts_dh_group_probe(&this->supported_dh_groups) ||
+	if (!pts_meas_algo_probe(&this->supported_algorithms) ||
+		!pts_dh_group_probe(&this->supported_dh_groups, mandatory_dh_groups) ||
 		!pts_meas_algo_update(hash_alg, &this->supported_algorithms) ||
 		!pts_dh_group_update(dh_group, &this->supported_dh_groups))
 	{
@@ -613,4 +907,3 @@ imv_agent_if_t *imv_attestation_agent_create(const char *name, TNC_IMVID id,
 
 	return &this->public;
 }
-

@@ -30,6 +30,8 @@
 #include <alloca.h>
 #endif
 
+#include <utils/utils.h>
+
 typedef struct chunk_t chunk_t;
 
 /**
@@ -90,14 +92,52 @@ void chunk_split(chunk_t chunk, const char *mode, ...);
 /**
  * Write the binary contents of a chunk_t to a file
  *
+ * If the write fails, errno is set appropriately.
+ *
  * @param chunk			contents to write to file
  * @param path			path where file is written to
- * @param label			label specifying file type
  * @param mask			file mode creation mask
  * @param force			overwrite existing file by force
  * @return				TRUE if write operation was successful
  */
-bool chunk_write(chunk_t chunk, char *path, char *label, mode_t mask, bool force);
+bool chunk_write(chunk_t chunk, char *path, mode_t mask, bool force);
+
+/**
+ * Store data read from FD into a chunk
+ *
+ * On error, errno is set appropriately.
+ *
+ * @param fd			file descriptor to read from
+ * @param chunk			chunk receiving allocated buffer
+ * @return				TRUE if successful, FALSE on failure
+ */
+bool chunk_from_fd(int fd, chunk_t *chunk);
+
+/**
+ * mmap() a file to a chunk
+ *
+ * The returned chunk structure is allocated from heap, but it must be freed
+ * through chunk_unmap(). A user may alter the chunk ptr or len, but must pass
+ * the chunk pointer returned from chunk_map() to chunk_unmap() after use.
+ *
+ * On error, errno is set appropriately.
+ *
+ * @param path			path of file to map
+ * @param wr			TRUE to sync writes to disk
+ * @return				mapped chunk, NULL on error
+ */
+chunk_t *chunk_map(char *path, bool wr);
+
+/**
+ * munmap() a chunk previously mapped with chunk_map()
+ *
+ * When unmapping a writeable map, the return value should be checked to
+ * ensure changes landed on disk.
+ *
+ * @param chunk			pointer returned from chunk_map()
+ * @return				TRUE of changes written back to file
+ */
+bool chunk_unmap(chunk_t *chunk);
 
 /**
  * Convert a chunk of data to hex encoding.
@@ -183,17 +223,17 @@ static inline void chunk_clear(chunk_t *chunk)
 /**
  * Initialize a chunk using a char array
  */
-#define chunk_from_chars(...) ((chunk_t){(char[]){__VA_ARGS__}, sizeof((char[]){__VA_ARGS__})})
+#define chunk_from_chars(...) ((chunk_t){(u_char[]){__VA_ARGS__}, sizeof((u_char[]){__VA_ARGS__})})
 
 /**
  * Initialize a chunk to point to a thing
  */
-#define chunk_from_thing(thing) chunk_create((char*)&(thing), sizeof(thing))
+#define chunk_from_thing(thing) chunk_create((u_char*)&(thing), sizeof(thing))
 
 /**
  * Initialize a chunk from a string, not containing 0-terminator
  */
-#define chunk_from_str(str) ({char *x = (str); chunk_create(x, strlen(x));})
+#define chunk_from_str(str) ({char *x = (str); chunk_create((u_char*)x, strlen(x));})
 
 /**
  * Allocate a chunk on the heap
@@ -300,6 +340,15 @@ bool chunk_increment(chunk_t chunk);
 bool chunk_printable(chunk_t chunk, chunk_t *sane, char replace);
 
 /**
+ * Seed initial key for chunk_hash().
+ *
+ * This call should get invoked once during startup. This is usually done
+ * by calling library_init(). Calling it multiple times is safe, it gets
+ * executed just once.
+ */
+void chunk_hash_seed();
+
+/**
  * Computes a 32 bit hash of the given chunk.
  *
  * @note The output of this function is randomized, that is, it will only
@@ -368,6 +417,7 @@ u_int64_t chunk_mac(chunk_t chunk, u_char *key);
  * Arguments are:
  *	chunk_t *chunk
  * Use #-modifier to print a compact version
+ * Use +-modifier to print a compact version without separator
  */
 int chunk_printf_hook(printf_hook_data_t *data, printf_hook_spec_t *spec,
 					  const void *const *args);

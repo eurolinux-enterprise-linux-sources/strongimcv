@@ -339,10 +339,8 @@ METHOD(task_manager_t, flush_queue, void,
 	}
 }
 
-/**
- * flush all tasks in the task manager
- */
-static void flush(private_task_manager_t *this)
+METHOD(task_manager_t, flush, void,
+	private_task_manager_t *this)
 {
 	flush_queue(this, TASK_QUEUE_QUEUED);
 	flush_queue(this, TASK_QUEUE_PASSIVE);
@@ -413,7 +411,6 @@ static bool send_packet(private_task_manager_t *this, bool request,
 {
 	bool use_frags = FALSE;
 	ike_cfg_t *ike_cfg;
-	host_t *src, *dst;
 	chunk_t data;
 
 	ike_cfg = this->ike_sa->get_ike_cfg(this->ike_sa);
@@ -438,15 +435,18 @@ static bool send_packet(private_task_manager_t *this, bool request,
 		fragment_payload_t *fragment;
 		u_int8_t num, count;
 		size_t len, frag_size;
-		bool nat;
-
-		/* reduce size due to non-ESP marker */
-		nat = this->ike_sa->has_condition(this->ike_sa, COND_NAT_ANY);
-		frag_size = this->frag.size - (nat ? 4 : 0);
+		host_t *src, *dst;
 
 		src = packet->get_source(packet);
 		dst = packet->get_destination(packet);
-		count = (data.len / (frag_size + 1)) + 1;
+
+		frag_size = this->frag.size;
+		if (dst->get_port(dst) != IKEV2_UDP_PORT &&
+			src->get_port(src) != IKEV2_UDP_PORT)
+		{	/* reduce size due to non-ESP marker */
+			frag_size -= 4;
+		}
+		count = data.len / frag_size + (data.len % frag_size ? 1 : 0);
 
 		DBG1(DBG_IKE, "sending IKE message with length of %zu bytes in "
 			 "%hhu fragments", data.len, count);
@@ -537,23 +537,40 @@ static bool mode_config_expected(private_task_manager_t *this)
 	enumerator_t *enumerator;
 	peer_cfg_t *peer_cfg;
 	char *pool;
+	bool local;
 	host_t *host;
 
 	peer_cfg = this->ike_sa->get_peer_cfg(this->ike_sa);
 	if (peer_cfg)
 	{
-		enumerator = peer_cfg->create_pool_enumerator(peer_cfg);
-		if (!enumerator->enumerate(enumerator, &pool))
-		{	/* no pool configured */
+		if (peer_cfg->use_pull_mode(peer_cfg))
+		{
+			enumerator = peer_cfg->create_pool_enumerator(peer_cfg);
+			if (!enumerator->enumerate(enumerator, &pool))
+			{	/* no pool configured */
+				enumerator->destroy(enumerator);
+				return FALSE;
+			}
 			enumerator->destroy(enumerator);
-			return FALSE;
-		}
-		enumerator->destroy(enumerator);
 
+			local = FALSE;
+		}
+		else
+		{
+			enumerator = peer_cfg->create_virtual_ip_enumerator(peer_cfg);
+			if (!enumerator->enumerate(enumerator, &host))
+			{	/* not requesting a vip */
+				enumerator->destroy(enumerator);
+				return FALSE;
+			}
+			enumerator->destroy(enumerator);
+
+			local = TRUE;
+		}
 		enumerator = this->ike_sa->create_virtual_ip_enumerator(this->ike_sa,
-																FALSE);
+																local);
 		if (!enumerator->enumerate(enumerator, &host))
-		{	/* have a pool, but no VIP assigned yet */
+		{	/* expecting a VIP exchange, but no VIP assigned yet */
 			enumerator->destroy(enumerator);
 			return TRUE;
 		}
@@ -939,7 +956,7 @@ static void send_notify(private_task_manager_t *this, message_t *request,
 	response->set_request(response, TRUE);
 	response->set_message_id(response, mid);
 	response->add_payload(response, (payload_t*)
-				notify_payload_create_from_protocol_and_type(NOTIFY_V1,
+				notify_payload_create_from_protocol_and_type(PLV1_NOTIFY,
 													PROTO_IKE, type));
 
 	me = this->ike_sa->get_my_host(this->ike_sa);
@@ -1085,7 +1102,8 @@ static status_t process_request(private_task_manager_t *this,
 			case TRANSACTION:
 				if (this->ike_sa->get_state(this->ike_sa) != IKE_CONNECTING)
 				{
-					task = (task_t *)mode_config_create(this->ike_sa, FALSE);
+					task = (task_t *)mode_config_create(this->ike_sa,
+														FALSE, TRUE);
 				}
 				else
 				{
@@ -1247,13 +1265,13 @@ static status_t handle_fragment(private_task_manager_t *this, message_t *msg)
 	chunk_t data;
 	u_int8_t num;
 
-	payload = (fragment_payload_t*)msg->get_payload(msg, FRAGMENT_V1);
+	payload = (fragment_payload_t*)msg->get_payload(msg, PLV1_FRAGMENT);
 	if (!payload)
 	{
 		return FAILED;
 	}
 
-	if (this->frag.id != payload->get_id(payload))
+	if (!this->frag.list || this->frag.id != payload->get_id(payload))
 	{
 		clear_fragments(this, payload->get_id(payload));
 		this->frag.list = linked_list_create();
@@ -1394,7 +1412,7 @@ static status_t parse_message(private_task_manager_t *this, message_t *msg)
 		}
 	}
 
-	if (msg->get_first_payload_type(msg) == FRAGMENT_V1)
+	if (msg->get_first_payload_type(msg) == PLV1_FRAGMENT)
 	{
 		return handle_fragment(this, msg);
 	}
@@ -1496,7 +1514,7 @@ METHOD(task_manager_t, process_message, status_t,
 		{
 			if (this->ike_sa->get_state(this->ike_sa) != IKE_CREATED &&
 				this->ike_sa->get_state(this->ike_sa) != IKE_CONNECTING &&
-				msg->get_first_payload_type(msg) != FRAGMENT_V1)
+				msg->get_first_payload_type(msg) != PLV1_FRAGMENT)
 			{
 				DBG1(DBG_IKE, "ignoring %N in established IKE_SA state",
 					 exchange_type_names, msg->get_exchange_type(msg));
@@ -1561,7 +1579,7 @@ METHOD(task_manager_t, process_message, status_t,
 			lib->scheduler->schedule_job(lib->scheduler, job,
 					lib->settings->get_int(lib->settings,
 							"%s.half_open_timeout", HALF_OPEN_IKE_SA_TIMEOUT,
-							charon->name));
+							lib->ns));
 		}
 		this->ike_sa->update_hosts(this->ike_sa, me, other, TRUE);
 		charon->bus->message(charon->bus, msg, TRUE, TRUE);
@@ -1765,7 +1783,7 @@ static bool have_equal_ts(child_sa_t *child1, child_sa_t *child2, bool local)
 	{
 		equal = ts1->equals(ts1, ts2);
 	}
-	e1->destroy(e1);
+	e2->destroy(e2);
 	e1->destroy(e1);
 
 	return equal;
@@ -2050,6 +2068,7 @@ task_manager_v1_t *task_manager_v1_create(ike_sa_t *ike_sa)
 				.adopt_child_tasks = _adopt_child_tasks,
 				.busy = _busy,
 				.create_task_enumerator = _create_task_enumerator,
+				.flush = _flush,
 				.flush_queue = _flush_queue,
 				.destroy = _destroy,
 			},
@@ -2063,9 +2082,9 @@ task_manager_v1_t *task_manager_v1_create(ike_sa_t *ike_sa)
 		.frag = {
 			.exchange = ID_PROT,
 			.max_packet = lib->settings->get_int(lib->settings,
-					"%s.max_packet", MAX_PACKET, charon->name),
+						"%s.max_packet", MAX_PACKET, lib->ns),
 			.size = lib->settings->get_int(lib->settings,
-					"%s.fragment_size", MAX_FRAGMENT_SIZE, charon->name),
+						"%s.fragment_size", MAX_FRAGMENT_SIZE, lib->ns),
 		},
 		.ike_sa = ike_sa,
 		.rng = lib->crypto->create_rng(lib->crypto, RNG_WEAK),
@@ -2073,11 +2092,11 @@ task_manager_v1_t *task_manager_v1_create(ike_sa_t *ike_sa)
 		.active_tasks = linked_list_create(),
 		.passive_tasks = linked_list_create(),
 		.retransmit_tries = lib->settings->get_int(lib->settings,
-					"%s.retransmit_tries", RETRANSMIT_TRIES, charon->name),
+						"%s.retransmit_tries", RETRANSMIT_TRIES, lib->ns),
 		.retransmit_timeout = lib->settings->get_double(lib->settings,
-					"%s.retransmit_timeout", RETRANSMIT_TIMEOUT, charon->name),
+						"%s.retransmit_timeout", RETRANSMIT_TIMEOUT, lib->ns),
 		.retransmit_base = lib->settings->get_double(lib->settings,
-					"%s.retransmit_base", RETRANSMIT_BASE, charon->name),
+						"%s.retransmit_base", RETRANSMIT_BASE, lib->ns),
 	);
 
 	if (!this->rng)
